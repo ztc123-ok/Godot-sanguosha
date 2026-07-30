@@ -25,6 +25,7 @@ func _ready() -> void:
 	_test_arrow_barrage()
 	_test_iron_chain_and_recast()
 	_test_fire_attack_and_chain_damage()
+	_test_ai_fire_attack_human_reveal()
 	_test_indulgence()
 	_test_supply_shortage()
 	_test_lightning_hit_and_pass()
@@ -216,6 +217,26 @@ func _test_fire_attack_and_chain_damage() -> void:
 	game.request_fire_discard(0)
 	_expect(p2.hp == 3 and p1.hp == 3, "火攻造成火焰伤害并按目标优先传导")
 	_expect(not p1.chained and not p2.chained, "属性伤害后所有相关连环状态重置")
+
+
+func _test_ai_fire_attack_human_reveal() -> void:
+	_prepare_play()
+	game.current_player_index = 1
+	var revealed := DodgeCard.new()
+	revealed.suit = Card.Suit.HEART
+	revealed.rank = 6
+	var matching := PeachCard.new()
+	matching.suit = Card.Suit.HEART
+	matching.rank = 9
+	_set_hand(p1, [revealed])
+	_set_hand(p2, [FireAttackCard.new(), matching])
+	game._use_target_trick(p2, p1, 0)
+	_pass_nullification_chain()
+	_expect(game.flow_state == GameManager.FlowState.FIRE_REVEAL, "反贼火攻时进入玩家展示手牌状态")
+	game.request_card_use(0)
+	_expect(game.flow_state == GameManager.FlowState.FIRE_DISCARD, "AI回合中玩家仍可点击手牌完成火攻展示")
+	game._perform_ai_fire_discard()
+	_expect(p1.hp == 3 and game.flow_state == GameManager.FlowState.PLAY_ACTIVE, "反贼按展示花色弃牌并完成火攻结算")
 
 
 func _test_indulgence() -> void:

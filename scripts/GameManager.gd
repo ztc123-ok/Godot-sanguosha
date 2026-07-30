@@ -375,7 +375,7 @@ func is_waiting_for_rescue_from(user: Node) -> bool:
 
 
 func request_card_use(hand_index: int) -> void:
-	if flow_state == FlowState.GAME_OVER or current_player().is_ai:
+	if flow_state == FlowState.GAME_OVER:
 		return
 	if hand_index < 0 or hand_index >= player1.hand.size():
 		return
@@ -411,6 +411,10 @@ func request_card_use(hand_index: int) -> void:
 				request_rescue(card.card_type)
 			return
 
+	## 当前回合属于 AI 时，玩家仍可在上面的响应状态中点击手牌。
+	## 只有主动出牌入口需要阻止玩家代替 AI 操作。
+	if current_player().is_ai:
+		return
 	if phase != Phase.PLAY:
 		_reject("当前不是出牌阶段。")
 		return
