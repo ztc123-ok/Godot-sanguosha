@@ -1,0 +1,25 @@
+[gd_scene load_steps=4 format=3]
+
+[ext_resource type="Script" path="res://tests/RuleSmokeTest.gd" id="1_test"]
+[ext_resource type="Script" path="res://scripts/GameManager.gd" id="2_game"]
+[ext_resource type="Script" path="res://scripts/Player.gd" id="3_player"]
+
+[node name="RuleSmokeTest" type="Node"]
+script = ExtResource("1_test")
+
+[node name="GameManager" type="Node" parent="."]
+script = ExtResource("2_game")
+
+[node name="Players" type="Node" parent="GameManager"]
+
+[node name="Player1" type="Node" parent="GameManager/Players"]
+script = ExtResource("3_player")
+player_name = "Player1"
+role_name = "主公"
+
+[node name="Player2" type="Node" parent="GameManager/Players"]
+script = ExtResource("3_player")
+player_name = "Player2"
+role_name = "反贼"
+is_ai = true
+

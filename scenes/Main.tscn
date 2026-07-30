@@ -1,0 +1,459 @@
+[gd_scene load_steps=13 format=3]
+
+[ext_resource type="Script" path="res://scripts/Main.gd" id="1_main"]
+[ext_resource type="Script" path="res://scripts/GameManager.gd" id="2_game"]
+[ext_resource type="Script" path="res://scripts/Player.gd" id="3_player"]
+[ext_resource type="Script" path="res://scripts/UIManager.gd" id="4_ui"]
+[ext_resource type="Script" path="res://scripts/ui/PlayerDropZone.gd" id="5_zone"]
+
+[sub_resource type="StyleBoxFlat" id="StyleHeader"]
+bg_color = Color(0.105, 0.078, 0.071, 0.96)
+border_width_left = 2
+border_width_top = 2
+border_width_right = 2
+border_width_bottom = 2
+border_color = Color(0.66, 0.45, 0.22, 1)
+corner_radius_top_left = 10
+corner_radius_top_right = 10
+corner_radius_bottom_right = 10
+corner_radius_bottom_left = 10
+
+[sub_resource type="StyleBoxFlat" id="StylePrompt"]
+bg_color = Color(0.15, 0.11, 0.09, 0.95)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.82, 0.64, 0.32, 0.8)
+corner_radius_top_left = 8
+corner_radius_top_right = 8
+corner_radius_bottom_right = 8
+corner_radius_bottom_left = 8
+
+[sub_resource type="StyleBoxFlat" id="StyleOpponent"]
+bg_color = Color(0.25, 0.075, 0.068, 0.94)
+border_width_left = 3
+border_width_top = 3
+border_width_right = 3
+border_width_bottom = 3
+border_color = Color(0.65, 0.22, 0.17, 1)
+corner_radius_top_left = 14
+corner_radius_top_right = 14
+corner_radius_bottom_right = 14
+corner_radius_bottom_left = 14
+shadow_color = Color(0, 0, 0, 0.3)
+shadow_size = 6
+
+[sub_resource type="StyleBoxFlat" id="StylePlayer"]
+bg_color = Color(0.07, 0.17, 0.24, 0.96)
+border_width_left = 3
+border_width_top = 3
+border_width_right = 3
+border_width_bottom = 3
+border_color = Color(0.19, 0.54, 0.69, 1)
+corner_radius_top_left = 14
+corner_radius_top_right = 14
+corner_radius_bottom_right = 14
+corner_radius_bottom_left = 14
+shadow_color = Color(0, 0, 0, 0.3)
+shadow_size = 6
+
+[sub_resource type="StyleBoxFlat" id="StyleDarkPanel"]
+bg_color = Color(0.055, 0.07, 0.09, 0.96)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.3, 0.35, 0.39, 1)
+corner_radius_top_left = 9
+corner_radius_top_right = 9
+corner_radius_bottom_right = 9
+corner_radius_bottom_left = 9
+
+[sub_resource type="StyleBoxFlat" id="StyleBarBackground"]
+bg_color = Color(0.09, 0.09, 0.1, 0.9)
+corner_radius_top_left = 7
+corner_radius_top_right = 7
+corner_radius_bottom_right = 7
+corner_radius_bottom_left = 7
+
+[sub_resource type="StyleBoxFlat" id="StyleBarPlayer"]
+bg_color = Color(0.16, 0.7, 0.47, 1)
+corner_radius_top_left = 7
+corner_radius_top_right = 7
+corner_radius_bottom_right = 7
+corner_radius_bottom_left = 7
+
+[sub_resource type="StyleBoxFlat" id="StyleBarOpponent"]
+bg_color = Color(0.85, 0.26, 0.2, 1)
+corner_radius_top_left = 7
+corner_radius_top_right = 7
+corner_radius_bottom_right = 7
+corner_radius_bottom_left = 7
+
+[node name="Main" type="Node2D"]
+script = ExtResource("1_main")
+
+[node name="Background" type="ColorRect" parent="."]
+offset_right = 1280.0
+offset_bottom = 720.0
+mouse_filter = 2
+color = Color(0.025, 0.045, 0.06, 1)
+
+[node name="GameManager" type="Node" parent="."]
+script = ExtResource("2_game")
+
+[node name="Players" type="Node" parent="GameManager"]
+
+[node name="Player1" type="Node" parent="GameManager/Players"]
+script = ExtResource("3_player")
+player_name = "Player1"
+role_name = "主公"
+
+[node name="Player2" type="Node" parent="GameManager/Players"]
+script = ExtResource("3_player")
+player_name = "Player2"
+role_name = "反贼"
+is_ai = true
+
+[node name="UIManager" type="CanvasLayer" parent="."]
+script = ExtResource("4_ui")
+
+[node name="Root" type="Control" parent="UIManager"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="Margin" type="MarginContainer" parent="UIManager/Root"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = 18.0
+offset_top = 14.0
+offset_right = -18.0
+offset_bottom = -14.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="Layout" type="VBoxContainer" parent="UIManager/Root/Margin"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="Header" type="PanelContainer" parent="UIManager/Root/Margin/Layout"]
+custom_minimum_size = Vector2(0, 54)
+layout_mode = 2
+theme_override_styles/panel = SubResource("StyleHeader")
+
+[node name="HeaderMargin" type="MarginContainer" parent="UIManager/Root/Margin/Layout/Header"]
+layout_mode = 2
+theme_override_constants/margin_left = 16
+theme_override_constants/margin_top = 7
+theme_override_constants/margin_right = 16
+theme_override_constants/margin_bottom = 7
+
+[node name="HeaderRow" type="HBoxContainer" parent="UIManager/Root/Margin/Layout/Header/HeaderMargin"]
+layout_mode = 2
+theme_override_constants/separation = 20
+
+[node name="Title" type="Label" parent="UIManager/Root/Margin/Layout/Header/HeaderMargin/HeaderRow"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.95, 0.79, 0.43, 1)
+theme_override_font_sizes/font_size = 25
+text = "三国杀 · 二人基础版"
+
+[node name="Spacer" type="Control" parent="UIManager/Root/Margin/Layout/Header/HeaderMargin/HeaderRow"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="TurnLabel" type="Label" parent="UIManager/Root/Margin/Layout/Header/HeaderMargin/HeaderRow"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.95, 0.93, 0.86, 1)
+theme_override_font_sizes/font_size = 18
+text = "第 1 回合"
+
+[node name="PhaseLabel" type="Label" parent="UIManager/Root/Margin/Layout/Header/HeaderMargin/HeaderRow"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.99, 0.68, 0.28, 1)
+theme_override_font_sizes/font_size = 18
+text = "开始阶段"
+
+[node name="DeckLabel" type="Label" parent="UIManager/Root/Margin/Layout/Header/HeaderMargin/HeaderRow"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.67, 0.73, 0.78, 1)
+theme_override_font_sizes/font_size = 15
+text = "牌堆 24"
+
+[node name="PromptPanel" type="PanelContainer" parent="UIManager/Root/Margin/Layout"]
+custom_minimum_size = Vector2(0, 42)
+layout_mode = 2
+theme_override_styles/panel = SubResource("StylePrompt")
+
+[node name="PromptLabel" type="Label" parent="UIManager/Root/Margin/Layout/PromptPanel"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(1, 0.87, 0.55, 1)
+theme_override_font_sizes/font_size = 17
+text = "准备开始"
+horizontal_alignment = 1
+vertical_alignment = 1
+
+[node name="OpponentZone" type="PanelContainer" parent="UIManager/Root/Margin/Layout"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(0, 142)
+layout_mode = 2
+theme_override_styles/panel = SubResource("StyleOpponent")
+script = ExtResource("5_zone")
+player_index = 1
+
+[node name="OpponentMargin" type="MarginContainer" parent="UIManager/Root/Margin/Layout/OpponentZone"]
+layout_mode = 2
+theme_override_constants/margin_left = 18
+theme_override_constants/margin_top = 10
+theme_override_constants/margin_right = 18
+theme_override_constants/margin_bottom = 10
+
+[node name="OpponentRow" type="HBoxContainer" parent="UIManager/Root/Margin/Layout/OpponentZone/OpponentMargin"]
+layout_mode = 2
+theme_override_constants/separation = 18
+
+[node name="Avatar" type="PanelContainer" parent="UIManager/Root/Margin/Layout/OpponentZone/OpponentMargin/OpponentRow"]
+custom_minimum_size = Vector2(98, 0)
+layout_mode = 2
+theme_override_styles/panel = SubResource("StyleHeader")
+
+[node name="AvatarText" type="Label" parent="UIManager/Root/Margin/Layout/OpponentZone/OpponentMargin/OpponentRow/Avatar"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.92, 0.44, 0.33, 1)
+theme_override_font_sizes/font_size = 45
+text = "反"
+horizontal_alignment = 1
+vertical_alignment = 1
+
+[node name="Info" type="VBoxContainer" parent="UIManager/Root/Margin/Layout/OpponentZone/OpponentMargin/OpponentRow"]
+custom_minimum_size = Vector2(285, 0)
+layout_mode = 2
+theme_override_constants/separation = 7
+
+[node name="OpponentName" type="Label" parent="UIManager/Root/Margin/Layout/OpponentZone/OpponentMargin/OpponentRow/Info"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_font_sizes/font_size = 21
+text = "Player2 · 反贼（AI）"
+
+[node name="OpponentHP" type="ProgressBar" parent="UIManager/Root/Margin/Layout/OpponentZone/OpponentMargin/OpponentRow/Info"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(0, 22)
+layout_mode = 2
+max_value = 4.0
+value = 4.0
+show_percentage = false
+theme_override_styles/background = SubResource("StyleBarBackground")
+theme_override_styles/fill = SubResource("StyleBarOpponent")
+
+[node name="OpponentHPText" type="Label" parent="UIManager/Root/Margin/Layout/OpponentZone/OpponentMargin/OpponentRow/Info"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.95, 0.82, 0.78, 1)
+text = "体力 4 / 4    手牌 4 / 上限 4"
+
+[node name="Hint" type="Label" parent="UIManager/Root/Margin/Layout/OpponentZone/OpponentMargin/OpponentRow/Info"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.82, 0.62, 0.55, 1)
+text = "将【杀】拖到这里，或选牌后点击这里"
+
+[node name="OpponentHand" type="HBoxContainer" parent="UIManager/Root/Margin/Layout/OpponentZone/OpponentMargin/OpponentRow"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+alignment = 2
+theme_override_constants/separation = -22
+
+[node name="BattleLine" type="HBoxContainer" parent="UIManager/Root/Margin/Layout"]
+custom_minimum_size = Vector2(0, 24)
+layout_mode = 2
+alignment = 1
+
+[node name="LineText" type="Label" parent="UIManager/Root/Margin/Layout/BattleLine"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.54, 0.58, 0.62, 1)
+theme_override_font_sizes/font_size = 14
+text = "◆  出牌 → 响应 → 伤害 → 濒死 → 返回出牌阶段  ◆"
+
+[node name="PlayerZone" type="PanelContainer" parent="UIManager/Root/Margin/Layout"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(0, 92)
+layout_mode = 2
+theme_override_styles/panel = SubResource("StylePlayer")
+script = ExtResource("5_zone")
+
+[node name="PlayerMargin" type="MarginContainer" parent="UIManager/Root/Margin/Layout/PlayerZone"]
+layout_mode = 2
+theme_override_constants/margin_left = 18
+theme_override_constants/margin_top = 9
+theme_override_constants/margin_right = 18
+theme_override_constants/margin_bottom = 9
+
+[node name="PlayerRow" type="HBoxContainer" parent="UIManager/Root/Margin/Layout/PlayerZone/PlayerMargin"]
+layout_mode = 2
+theme_override_constants/separation = 16
+
+[node name="Avatar" type="PanelContainer" parent="UIManager/Root/Margin/Layout/PlayerZone/PlayerMargin/PlayerRow"]
+custom_minimum_size = Vector2(74, 0)
+layout_mode = 2
+theme_override_styles/panel = SubResource("StyleHeader")
+
+[node name="AvatarText" type="Label" parent="UIManager/Root/Margin/Layout/PlayerZone/PlayerMargin/PlayerRow/Avatar"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.35, 0.73, 0.92, 1)
+theme_override_font_sizes/font_size = 37
+text = "主"
+horizontal_alignment = 1
+vertical_alignment = 1
+
+[node name="Info" type="VBoxContainer" parent="UIManager/Root/Margin/Layout/PlayerZone/PlayerMargin/PlayerRow"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_constants/separation = 5
+
+[node name="PlayerName" type="Label" parent="UIManager/Root/Margin/Layout/PlayerZone/PlayerMargin/PlayerRow/Info"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_font_sizes/font_size = 20
+text = "Player1 · 主公"
+
+[node name="PlayerHP" type="ProgressBar" parent="UIManager/Root/Margin/Layout/PlayerZone/PlayerMargin/PlayerRow/Info"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(0, 20)
+layout_mode = 2
+max_value = 4.0
+value = 4.0
+show_percentage = false
+theme_override_styles/background = SubResource("StyleBarBackground")
+theme_override_styles/fill = SubResource("StyleBarPlayer")
+
+[node name="PlayerHPText" type="Label" parent="UIManager/Root/Margin/Layout/PlayerZone/PlayerMargin/PlayerRow/Info"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.75, 0.9, 0.94, 1)
+text = "体力 4 / 4    手牌 4 / 上限 4"
+
+[node name="SelfHint" type="Label" parent="UIManager/Root/Margin/Layout/PlayerZone/PlayerMargin/PlayerRow"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.48, 0.77, 0.88, 1)
+text = "【桃】/【酒】可拖到自己的角色区"
+vertical_alignment = 1
+
+[node name="HandPanel" type="PanelContainer" parent="UIManager/Root/Margin/Layout"]
+custom_minimum_size = Vector2(0, 164)
+layout_mode = 2
+size_flags_vertical = 3
+theme_override_styles/panel = SubResource("StyleDarkPanel")
+
+[node name="HandMargin" type="MarginContainer" parent="UIManager/Root/Margin/Layout/HandPanel"]
+layout_mode = 2
+theme_override_constants/margin_left = 10
+theme_override_constants/margin_top = 7
+theme_override_constants/margin_right = 10
+theme_override_constants/margin_bottom = 7
+
+[node name="PlayerHandScroll" type="ScrollContainer" parent="UIManager/Root/Margin/Layout/HandPanel/HandMargin"]
+layout_mode = 2
+horizontal_scroll_mode = 1
+vertical_scroll_mode = 0
+
+[node name="PlayerHand" type="HBoxContainer" parent="UIManager/Root/Margin/Layout/HandPanel/HandMargin/PlayerHandScroll"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+alignment = 1
+theme_override_constants/separation = 8
+
+[node name="ActionBar" type="HBoxContainer" parent="UIManager/Root/Margin/Layout"]
+custom_minimum_size = Vector2(0, 39)
+layout_mode = 2
+alignment = 1
+theme_override_constants/separation = 9
+
+[node name="EndPlayButton" type="Button" parent="UIManager/Root/Margin/Layout/ActionBar"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(126, 38)
+layout_mode = 2
+text = "结束出牌阶段"
+
+[node name="CancelButton" type="Button" parent="UIManager/Root/Margin/Layout/ActionBar"]
+unique_name_in_owner = true
+visible = false
+custom_minimum_size = Vector2(100, 38)
+layout_mode = 2
+text = "取消选牌"
+
+[node name="DodgeButton" type="Button" parent="UIManager/Root/Margin/Layout/ActionBar"]
+unique_name_in_owner = true
+visible = false
+custom_minimum_size = Vector2(112, 38)
+layout_mode = 2
+text = "使用【闪】"
+
+[node name="PassButton" type="Button" parent="UIManager/Root/Margin/Layout/ActionBar"]
+unique_name_in_owner = true
+visible = false
+custom_minimum_size = Vector2(112, 38)
+layout_mode = 2
+text = "不使用闪"
+
+[node name="PeachButton" type="Button" parent="UIManager/Root/Margin/Layout/ActionBar"]
+unique_name_in_owner = true
+visible = false
+custom_minimum_size = Vector2(112, 38)
+layout_mode = 2
+text = "使用【桃】"
+
+[node name="WineButton" type="Button" parent="UIManager/Root/Margin/Layout/ActionBar"]
+unique_name_in_owner = true
+visible = false
+custom_minimum_size = Vector2(112, 38)
+layout_mode = 2
+text = "使用【酒】"
+
+[node name="GiveUpButton" type="Button" parent="UIManager/Root/Margin/Layout/ActionBar"]
+unique_name_in_owner = true
+visible = false
+custom_minimum_size = Vector2(100, 38)
+layout_mode = 2
+text = "放弃自救"
+
+[node name="RestartButton" type="Button" parent="UIManager/Root/Margin/Layout/ActionBar"]
+unique_name_in_owner = true
+visible = false
+custom_minimum_size = Vector2(116, 38)
+layout_mode = 2
+text = "重新开始"
+
+[node name="LogPanel" type="PanelContainer" parent="UIManager/Root/Margin/Layout"]
+custom_minimum_size = Vector2(0, 76)
+layout_mode = 2
+theme_override_styles/panel = SubResource("StyleDarkPanel")
+
+[node name="LogMargin" type="MarginContainer" parent="UIManager/Root/Margin/Layout/LogPanel"]
+layout_mode = 2
+theme_override_constants/margin_left = 10
+theme_override_constants/margin_top = 6
+theme_override_constants/margin_right = 10
+theme_override_constants/margin_bottom = 6
+
+[node name="LogView" type="RichTextLabel" parent="UIManager/Root/Margin/Layout/LogPanel/LogMargin"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/default_color = Color(0.72, 0.77, 0.8, 1)
+theme_override_font_sizes/normal_font_size = 13
+bbcode_enabled = true
+scroll_active = true
+scroll_following = true
+text = "对局记录\n"
