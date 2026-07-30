@@ -163,7 +163,7 @@ theme_override_constants/separation = 20
 layout_mode = 2
 theme_override_colors/font_color = Color(0.95, 0.79, 0.43, 1)
 theme_override_font_sizes/font_size = 25
-text = "三国杀 · 二人基础版"
+text = "三国杀 · 二人标准锦囊版"
 
 [node name="Spacer" type="Control" parent="UIManager/Root/Margin/Layout/Header/HeaderMargin/HeaderRow"]
 layout_mode = 2
@@ -263,10 +263,12 @@ layout_mode = 2
 theme_override_colors/font_color = Color(0.95, 0.82, 0.78, 1)
 text = "体力 4 / 4    手牌 4 / 上限 4"
 
-[node name="Hint" type="Label" parent="UIManager/Root/Margin/Layout/OpponentZone/OpponentMargin/OpponentRow/Info"]
+[node name="OpponentStatus" type="Label" parent="UIManager/Root/Margin/Layout/OpponentZone/OpponentMargin/OpponentRow/Info"]
+unique_name_in_owner = true
 layout_mode = 2
 theme_override_colors/font_color = Color(0.82, 0.62, 0.55, 1)
-text = "将【杀】拖到这里，或选牌后点击这里"
+text = "连环：未横置 · 武器：无 · 判定区：空"
+clip_text = true
 
 [node name="OpponentHand" type="HBoxContainer" parent="UIManager/Root/Margin/Layout/OpponentZone/OpponentMargin/OpponentRow"]
 unique_name_in_owner = true
@@ -344,10 +346,11 @@ layout_mode = 2
 theme_override_colors/font_color = Color(0.75, 0.9, 0.94, 1)
 text = "体力 4 / 4    手牌 4 / 上限 4"
 
-[node name="SelfHint" type="Label" parent="UIManager/Root/Margin/Layout/PlayerZone/PlayerMargin/PlayerRow"]
+[node name="PlayerStatus" type="Label" parent="UIManager/Root/Margin/Layout/PlayerZone/PlayerMargin/PlayerRow"]
+unique_name_in_owner = true
 layout_mode = 2
 theme_override_colors/font_color = Color(0.48, 0.77, 0.88, 1)
-text = "【桃】/【酒】可拖到自己的角色区"
+text = "连环：未横置 · 武器：无 · 判定区：空"
 vertical_alignment = 1
 
 [node name="HandPanel" type="PanelContainer" parent="UIManager/Root/Margin/Layout"]
@@ -435,6 +438,62 @@ visible = false
 custom_minimum_size = Vector2(116, 38)
 layout_mode = 2
 text = "重新开始"
+
+[node name="SlashResponseButton" type="Button" parent="UIManager/Root/Margin/Layout/ActionBar"]
+unique_name_in_owner = true
+visible = false
+custom_minimum_size = Vector2(112, 38)
+layout_mode = 2
+text = "打出【杀】"
+
+[node name="NullificationButton" type="Button" parent="UIManager/Root/Margin/Layout/ActionBar"]
+unique_name_in_owner = true
+visible = false
+custom_minimum_size = Vector2(142, 38)
+layout_mode = 2
+text = "使用【无懈可击】"
+
+[node name="PassNullificationButton" type="Button" parent="UIManager/Root/Margin/Layout/ActionBar"]
+unique_name_in_owner = true
+visible = false
+custom_minimum_size = Vector2(120, 38)
+layout_mode = 2
+text = "放弃无懈"
+
+[node name="FirePassButton" type="Button" parent="UIManager/Root/Margin/Layout/ActionBar"]
+unique_name_in_owner = true
+visible = false
+custom_minimum_size = Vector2(130, 38)
+layout_mode = 2
+text = "放弃火攻弃牌"
+
+[node name="ChoiceButton0" type="Button" parent="UIManager/Root/Margin/Layout/ActionBar"]
+unique_name_in_owner = true
+visible = false
+custom_minimum_size = Vector2(125, 38)
+layout_mode = 2
+text = "选项一"
+
+[node name="ChoiceButton1" type="Button" parent="UIManager/Root/Margin/Layout/ActionBar"]
+unique_name_in_owner = true
+visible = false
+custom_minimum_size = Vector2(125, 38)
+layout_mode = 2
+text = "选项二"
+
+[node name="ChoiceButton2" type="Button" parent="UIManager/Root/Margin/Layout/ActionBar"]
+unique_name_in_owner = true
+visible = false
+custom_minimum_size = Vector2(125, 38)
+layout_mode = 2
+text = "选项三"
+
+[node name="ChoiceButton3" type="Button" parent="UIManager/Root/Margin/Layout/ActionBar"]
+unique_name_in_owner = true
+visible = false
+custom_minimum_size = Vector2(125, 38)
+layout_mode = 2
+text = "选项四"
 
 [node name="LogPanel" type="PanelContainer" parent="UIManager/Root/Margin/Layout"]
 custom_minimum_size = Vector2(0, 76)

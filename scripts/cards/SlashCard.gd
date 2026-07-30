@@ -15,3 +15,6 @@ func _init() -> void:
 func can_use_in_play(game: Node, user: Node) -> bool:
 	return game.is_play_phase_for(user) and not user.slash_used_this_turn
 
+
+func can_use_as_response(game: Node, user: Node) -> bool:
+	return game.is_waiting_for_slash_from(user)

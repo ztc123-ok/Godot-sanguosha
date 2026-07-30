@@ -29,7 +29,20 @@ Main (Node2D, Main.gd)
 
 ## 流程状态
 
-`PLAY_ACTIVE` → `SELECTING_TARGET` → `RESPONDING_SLASH` → `DYING_RESCUE`（可选）→ `PLAY_ACTIVE`
+主动牌主链：
+
+`PLAY_ACTIVE` → `SELECTING_TARGET` → `NULLIFICATION_RESPONSE` → 具体牌效果 → `PLAY_ACTIVE`
+
+响应子状态包括：
+
+- `RESPONDING_SLASH`
+- `AOE_RESPONSE`
+- `DUEL_RESPONSE`
+- `FIRE_REVEAL` / `FIRE_DISCARD`
+- `BORROW_RESPONSE`
+- `CHOOSING_OPTION` / `CHOOSING_REVEALED`
+- `DYING_RESCUE`
+
+判定阶段从玩家的延时锦囊槽生成判定队列，每个效果先进入无懈链，再翻开具有花色与点数的判定牌。属性伤害由统一伤害队列处理，目标先结算，之后才依次传播给其他横置角色。
 
 结束出牌后进入 `DISCARDING`，达到手牌上限后进入 `END` 并切换当前玩家。胜负确定后进入 `GAME_OVER`，所有旧 AI 计时动作失效。
-

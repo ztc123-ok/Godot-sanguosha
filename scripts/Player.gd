@@ -14,11 +14,25 @@ var hp: int = 4
 var hand: Array[Card] = []
 var slash_used_this_turn: bool = false
 var wine_active: bool = false
+var chained: bool = false
+
+## 基础版只实现锦囊规则所必需的武器槽。
+var weapon_card: Card
+
+## 三种延时锦囊各自占用一个判定区槽位。
+var indulgence_card: Card
+var supply_shortage_card: Card
+var lightning_card: Card
 
 
 func reset_for_match() -> void:
 	hp = max_hp
 	hand.clear()
+	chained = false
+	weapon_card = null
+	indulgence_card = null
+	supply_shortage_card = null
+	lightning_card = null
 	reset_turn_flags()
 	hp_changed.emit(hp, max_hp)
 	hand_changed.emit()
@@ -74,3 +88,77 @@ func hand_limit() -> int:
 func is_dying() -> bool:
 	return hp <= 0
 
+
+func has_any_card_in_play_area() -> bool:
+	return (
+		not hand.is_empty()
+		or weapon_card != null
+		or indulgence_card != null
+		or supply_shortage_card != null
+		or lightning_card != null
+	)
+
+
+func has_delayed_trick(card_type: Card.CardType) -> bool:
+	match card_type:
+		Card.CardType.INDULGENCE:
+			return indulgence_card != null
+		Card.CardType.SUPPLY_SHORTAGE:
+			return supply_shortage_card != null
+		Card.CardType.LIGHTNING:
+			return lightning_card != null
+	return false
+
+
+func add_delayed_trick(card: Card) -> bool:
+	if has_delayed_trick(card.card_type):
+		return false
+	match card.card_type:
+		Card.CardType.INDULGENCE:
+			indulgence_card = card
+		Card.CardType.SUPPLY_SHORTAGE:
+			supply_shortage_card = card
+		Card.CardType.LIGHTNING:
+			lightning_card = card
+		_:
+			return false
+	return true
+
+
+func remove_delayed_trick(card_type: Card.CardType) -> Card:
+	var removed: Card
+	match card_type:
+		Card.CardType.INDULGENCE:
+			removed = indulgence_card
+			indulgence_card = null
+		Card.CardType.SUPPLY_SHORTAGE:
+			removed = supply_shortage_card
+			supply_shortage_card = null
+		Card.CardType.LIGHTNING:
+			removed = lightning_card
+			lightning_card = null
+	return removed
+
+
+func delayed_tricks_in_judgement_order() -> Array[Card]:
+	var cards: Array[Card] = []
+	## 后置入判定区的牌先判定；固定槽位用闪电→兵粮→乐的逆序表示。
+	if lightning_card != null:
+		cards.append(lightning_card)
+	if supply_shortage_card != null:
+		cards.append(supply_shortage_card)
+	if indulgence_card != null:
+		cards.append(indulgence_card)
+	return cards
+
+
+func equip_weapon(card: Card) -> Card:
+	var replaced: Card = weapon_card
+	weapon_card = card
+	return replaced
+
+
+func lose_weapon() -> Card:
+	var removed: Card = weapon_card
+	weapon_card = null
+	return removed

@@ -75,6 +75,17 @@ func _build_visual() -> void:
 	rule.text = "基础牌" if face_down else _short_rule(card.card_type)
 	content.add_child(rule)
 
+	if not face_down:
+		var identity := Label.new()
+		identity.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		identity.add_theme_font_size_override("font_size", 11)
+		identity.add_theme_color_override(
+			"font_color",
+			Color("b73f48") if card.is_red() else Color("333a46")
+		)
+		identity.text = "%s %s" % [card.suit_text(), card.rank_text()]
+		content.add_child(identity)
+
 	tooltip_text = "" if face_down else card.description
 
 
@@ -88,6 +99,38 @@ func _short_rule(card_type: Card.CardType) -> String:
 			return "回复 1 体力\n濒死时\n可以自救"
 		Card.CardType.WINE:
 			return "下一张【杀】\n伤害 +1\n濒死时自救"
+		Card.CardType.DISMANTLE:
+			return "弃置敌方\n一张手牌\n或武器"
+		Card.CardType.STEAL:
+			return "距离 1\n获得敌方\n一张手牌"
+		Card.CardType.DRAW_TWO:
+			return "对自己使用\n立即摸\n两张牌"
+		Card.CardType.DUEL:
+			return "轮流打出【杀】\n首先不出者\n受到伤害"
+		Card.CardType.BORROW_SWORD:
+			return "令持武器者\n出【杀】\n否则交武器"
+		Card.CardType.AMAZING_GRACE:
+			return "亮出两张牌\n双方依次\n选择一张"
+		Card.CardType.PEACH_GARDEN:
+			return "所有角色\n各回复\n1 点体力"
+		Card.CardType.NULLIFICATION:
+			return "响应锦囊\n抵消效果\n可反无懈"
+		Card.CardType.BARBARIAN_INVASION:
+			return "其他角色\n需出【杀】\n否则受伤"
+		Card.CardType.ARROW_BARRAGE:
+			return "其他角色\n需出【闪】\n否则受伤"
+		Card.CardType.IRON_CHAIN:
+			return "切换连环状态\n或重铸\n摸一张牌"
+		Card.CardType.FIRE_ATTACK:
+			return "展示手牌\n弃同花色牌\n造成火伤"
+		Card.CardType.INDULGENCE:
+			return "判定非红桃\n跳过\n出牌阶段"
+		Card.CardType.SUPPLY_SHORTAGE:
+			return "判定非梅花\n跳过\n摸牌阶段"
+		Card.CardType.LIGHTNING:
+			return "黑桃 2~9\n受到 3 点\n雷电伤害"
+		Card.CardType.WEAPON:
+			return "装备武器\n攻击范围 2\n可被借刀"
 	return ""
 
 
