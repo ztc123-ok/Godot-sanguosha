@@ -1,5 +1,5 @@
 extends Node
-## 基础牌 + 全部标准锦囊的无界面回归测试。
+## 基础牌 + 全部标准锦囊 + 完整装备系统的无界面回归测试。
 
 @onready var game: GameManager = $GameManager
 @onready var p1: BattlePlayer = $GameManager/Players/Player1
@@ -29,9 +29,15 @@ func _ready() -> void:
 	_test_supply_shortage()
 	_test_lightning_hit_and_pass()
 	_test_hand_limit_discard()
+	_test_equipment_slots_replacement_and_distance()
+	_test_crossbow_and_serpent_spear()
+	_test_qinggang_and_armor_rules()
+	_test_bagua_and_vine_aoe()
+	_test_ice_sword_and_axe()
+	_test_green_dragon_and_qilin_bow()
 
 	if failures.is_empty():
-		print("RULE_SMOKE_TEST: PASS (basic + 15 trick cards)")
+		print("RULE_SMOKE_TEST: PASS (basic + 15 trick cards + complete equipment system)")
 		get_tree().quit(0)
 	else:
 		for failure: String in failures:
@@ -80,11 +86,11 @@ func _test_basic_slash_dodge_wine_and_dying() -> void:
 
 func _test_dismantle() -> void:
 	_prepare_play()
-	p2.weapon_card = WeaponCard.new()
+	p2.weapon = QinggangSword.new()
 	_set_hand(p1, [DismantleCard.new()])
 	game.request_card_on_target(0, 1)
 	_pass_nullification_chain()
-	_expect(p2.weapon_card == null, "【过河拆桥】可弃置目标武器")
+	_expect(p2.weapon == null, "【过河拆桥】可弃置目标武器")
 
 
 func _test_steal() -> void:
@@ -122,14 +128,14 @@ func _test_duel() -> void:
 
 func _test_borrow_sword() -> void:
 	_prepare_play()
-	var weapon := WeaponCard.new()
-	p2.weapon_card = weapon
+	var weapon := QinggangSword.new()
+	p2.weapon = weapon
 	_set_hand(p1, [BorrowSwordCard.new()])
 	_set_hand(p2, [])
 	game.request_card_on_target(0, 1)
 	_pass_nullification_chain()
 	game._borrow_give_weapon()
-	_expect(p2.weapon_card == null and p1.hand.has(weapon), "【借刀杀人】不出杀则交出武器")
+	_expect(p2.weapon == null and p1.hand.has(weapon), "【借刀杀人】不出杀则交出武器")
 
 
 func _test_amazing_grace() -> void:
@@ -272,6 +278,135 @@ func _test_hand_limit_discard() -> void:
 	game.request_discard(0)
 	game.request_discard(0)
 	_expect(p1.hand.size() == 2 and game.phase == GameManager.Phase.END, "弃牌到当前体力上限")
+
+
+func _test_equipment_slots_replacement_and_distance() -> void:
+	_prepare_play()
+	p1.hp = 3
+	p1.armor = SilverLion.new()
+	_set_hand(p1, [VineArmor.new(), Crossbow.new(), DefensiveHorse.new(), OffensiveHorse.new()])
+	game._play_equipment(p1, 0)
+	_expect(p1.armor is VineArmor and p1.hp == 4, "同类防具替换，失去白银狮子回复1点体力")
+	game._play_equipment(p1, 0)
+	game._play_equipment(p1, 0)
+	game._play_equipment(p1, 0)
+	_expect(p1.weapon is Crossbow and p1.horse_plus != null and p1.horse_minus != null, "四个装备区彼此独立")
+
+	p2.horse_plus = DefensiveHorse.new()
+	p1.horse_minus = null
+	_expect(game.distance_between(p1, p2) == 2, "目标装备+1马时距离为2")
+	p1.horse_minus = OffensiveHorse.new()
+	_expect(game.distance_between(p1, p2) == 1, "-1马抵消目标+1马且距离最小为1")
+
+
+func _test_crossbow_and_serpent_spear() -> void:
+	_prepare_play()
+	p1.weapon = Crossbow.new()
+	p1.slash_used_this_turn = true
+	_expect(game.can_use_slash_in_play(p1), "诸葛连弩允许已出杀后继续使用【杀】")
+
+	_prepare_play()
+	p1.weapon = SerpentSpear.new()
+	_set_hand(p1, [PeachCard.new(), WineCard.new()])
+	_set_hand(p2, [])
+	game.request_serpent_spear()
+	game._perform_ai_response()
+	_expect(p1.hand.is_empty() and p2.hp == 3, "丈八蛇矛将两张手牌当【杀】使用")
+
+
+func _test_qinggang_and_armor_rules() -> void:
+	_prepare_play()
+	p1.weapon = QinggangSword.new()
+	p1.wine_active = true
+	p2.armor = SilverLion.new()
+	_set_hand(p1, [SlashCard.new()])
+	_set_hand(p2, [])
+	game.request_card_on_target(0, 1)
+	game._perform_ai_response()
+	_expect(p2.hp == 2, "青釭剑令酒杀无视白银狮子的伤害上限")
+
+	_prepare_play()
+	p1.wine_active = true
+	p2.armor = SilverLion.new()
+	_set_hand(p1, [SlashCard.new()])
+	_set_hand(p2, [])
+	game.request_card_on_target(0, 1)
+	game._perform_ai_response()
+	_expect(p2.hp == 3, "白银狮子将一次2点伤害限制为1")
+
+	_prepare_play()
+	p1.weapon = VermilionFan.new()
+	p2.armor = VineArmor.new()
+	_set_hand(p1, [SlashCard.new()])
+	_set_hand(p2, [])
+	game.request_card_on_target(0, 1)
+	game._perform_ai_response()
+	_expect(p2.hp == 2, "朱雀羽扇令杀变火杀，藤甲令火焰伤害+1")
+
+
+func _test_bagua_and_vine_aoe() -> void:
+	_prepare_play()
+	p2.armor = EightTrigrams.new()
+	var red_judgement := PeachCard.new()
+	red_judgement.suit = Card.Suit.HEART
+	red_judgement.rank = 8
+	game.draw_pile.append(red_judgement)
+	_set_hand(p1, [SlashCard.new()])
+	_set_hand(p2, [])
+	game.request_card_on_target(0, 1)
+	game._resolve_bagua_judgement(p2)
+	_expect(p2.hp == 4 and game.flow_state == GameManager.FlowState.PLAY_ACTIVE, "八卦阵红色判定视为【闪】")
+
+	_prepare_play()
+	p2.armor = VineArmor.new()
+	_set_hand(p1, [BarbarianInvasionCard.new()])
+	_set_hand(p2, [])
+	game.request_card_use(0)
+	_pass_nullification_chain()
+	_expect(p2.hp == 4, "藤甲令南蛮入侵无效")
+
+
+func _test_ice_sword_and_axe() -> void:
+	_prepare_play()
+	p1.weapon = IceSword.new()
+	_set_hand(p1, [SlashCard.new()])
+	_set_hand(p2, [PeachCard.new(), WineCard.new()])
+	game.request_card_on_target(0, 1)
+	game._perform_ai_response()
+	game.request_option(0)
+	_expect(p2.hp == 4 and p2.hand.is_empty(), "寒冰剑防止杀伤害并弃置目标两张牌")
+
+	_prepare_play()
+	p1.weapon = RockCleavingAxe.new()
+	_set_hand(p1, [SlashCard.new(), PeachCard.new(), WineCard.new()])
+	_set_hand(p2, [DodgeCard.new()])
+	game.request_card_on_target(0, 1)
+	game._perform_ai_response()
+	game.request_option(0)
+	_expect(p2.hp == 3 and p1.hand.is_empty(), "贯石斧弃两张牌令被闪抵消的杀仍造成伤害")
+
+
+func _test_green_dragon_and_qilin_bow() -> void:
+	_prepare_play()
+	p1.weapon = GreenDragonBlade.new()
+	_set_hand(p1, [SlashCard.new(), SlashCard.new()])
+	_set_hand(p2, [DodgeCard.new()])
+	game.request_card_on_target(0, 1)
+	game._perform_ai_response()
+	game.request_option(0)
+	game._perform_ai_response()
+	_expect(p2.hp == 3 and p1.hand.is_empty(), "青龙偃月刀在杀被闪后继续使用一张杀")
+
+	_prepare_play()
+	p1.weapon = QilinBow.new()
+	p2.horse_plus = DefensiveHorse.new()
+	_set_hand(p1, [SlashCard.new()])
+	_set_hand(p2, [])
+	game.request_card_on_target(0, 1)
+	## +1马使距离为2，但麒麟弓范围5，可正常命中并触发弃马。
+	game._perform_ai_response()
+	game.request_option(0)
+	_expect(p2.hp == 3 and p2.horse_plus == null, "麒麟弓在杀造成伤害后弃置目标坐骑")
 
 
 func _prepare_play() -> void:

@@ -2,6 +2,8 @@ class_name BattlePlayer
 extends Node
 ## 玩家领域对象：只负责体力、手牌和回合内标记，不直接控制流程。
 
+const EquipmentScript = preload("res://scripts/cards/equipment/Equipment.gd")
+
 signal hp_changed(current_hp: int, maximum_hp: int)
 signal hand_changed
 
@@ -16,8 +18,11 @@ var slash_used_this_turn: bool = false
 var wine_active: bool = false
 var chained: bool = false
 
-## 基础版只实现锦囊规则所必需的武器槽。
-var weapon_card: Card
+## 四个互相独立的装备区；同一装备区始终至多一张牌。
+var weapon: Card = null
+var armor: Card = null
+var horse_plus: Card = null
+var horse_minus: Card = null
 
 ## 三种延时锦囊各自占用一个判定区槽位。
 var indulgence_card: Card
@@ -29,7 +34,10 @@ func reset_for_match() -> void:
 	hp = max_hp
 	hand.clear()
 	chained = false
-	weapon_card = null
+	weapon = null
+	armor = null
+	horse_plus = null
+	horse_minus = null
 	indulgence_card = null
 	supply_shortage_card = null
 	lightning_card = null
@@ -92,7 +100,10 @@ func is_dying() -> bool:
 func has_any_card_in_play_area() -> bool:
 	return (
 		not hand.is_empty()
-		or weapon_card != null
+		or weapon != null
+		or armor != null
+		or horse_plus != null
+		or horse_minus != null
 		or indulgence_card != null
 		or supply_shortage_card != null
 		or lightning_card != null
@@ -152,13 +163,58 @@ func delayed_tricks_in_judgement_order() -> Array[Card]:
 	return cards
 
 
-func equip_weapon(card: Card) -> Card:
-	var replaced: Card = weapon_card
-	weapon_card = card
+func equipment_in_slot(slot: int) -> Card:
+	match slot:
+		EquipmentScript.Slot.WEAPON:
+			return weapon
+		EquipmentScript.Slot.ARMOR:
+			return armor
+		EquipmentScript.Slot.HORSE_PLUS:
+			return horse_plus
+		EquipmentScript.Slot.HORSE_MINUS:
+			return horse_minus
+	return null
+
+
+func equip(card: Card) -> Card:
+	var replaced: Card = equipment_in_slot(card.equipment_slot)
+	match card.equipment_slot:
+		EquipmentScript.Slot.WEAPON:
+			weapon = card
+		EquipmentScript.Slot.ARMOR:
+			armor = card
+		EquipmentScript.Slot.HORSE_PLUS:
+			horse_plus = card
+		EquipmentScript.Slot.HORSE_MINUS:
+			horse_minus = card
 	return replaced
 
 
-func lose_weapon() -> Card:
-	var removed: Card = weapon_card
-	weapon_card = null
+func remove_equipment(slot: int) -> Card:
+	var removed: Card = equipment_in_slot(slot)
+	match slot:
+		EquipmentScript.Slot.WEAPON:
+			weapon = null
+		EquipmentScript.Slot.ARMOR:
+			armor = null
+		EquipmentScript.Slot.HORSE_PLUS:
+			horse_plus = null
+		EquipmentScript.Slot.HORSE_MINUS:
+			horse_minus = null
 	return removed
+
+
+func all_equipment() -> Array[Card]:
+	var result: Array[Card] = []
+	for card: Card in [weapon, armor, horse_plus, horse_minus]:
+		if card != null:
+			result.append(card)
+	return result
+
+
+func equipment_count() -> int:
+	return all_equipment().size()
+
+
+func total_cards_in_hand_and_equipment() -> int:
+	return hand.size() + equipment_count()

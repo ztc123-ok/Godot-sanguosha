@@ -1,11 +1,11 @@
-; 三国杀二人标准锦囊版 - Godot 4.6
+; 三国杀二人完整基础/锦囊/装备版 - Godot 4.6
 ; 由管理器节点、状态机和信号驱动，所有逻辑均为纯 GDScript 4.x。
 
 config_version=5
 
 [application]
 
-config/name="三国杀·二人标准锦囊版"
+config/name="三国杀·二人完整卡牌版"
 run/main_scene="res://scenes/Main.tscn"
 config/features=PackedStringArray("4.6", "GL Compatibility")
 

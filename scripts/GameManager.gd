@@ -3,6 +3,8 @@ extends Node
 ## 双人局唯一规则入口。
 ## 所有主动牌、响应牌、锦囊、判定、伤害和濒死均经过本状态机结算。
 
+const EquipmentScript = preload("res://scripts/cards/equipment/Equipment.gd")
+
 signal state_changed
 signal log_added(message: String)
 signal match_finished(winner: BattlePlayer, loser: BattlePlayer)
@@ -69,6 +71,11 @@ var _skip_play_phase: bool = false
 
 ## 普通【杀】/借刀【杀】上下文。
 var _attack_after: Callable = Callable()
+var _attack_nature: DamageNature = DamageNature.NORMAL
+var _slash_ignores_armor: bool = false
+var _ice_sword_checked: bool = false
+var _bagua_attempted: bool = false
+var _pending_weapon_skill: Card.CardType = Card.CardType.SLASH
 
 ## 通用伤害队列；属性伤害连环传播也走此队列。
 var _damage_source: BattlePlayer
@@ -76,6 +83,7 @@ var _damage_amount: int = 0
 var _damage_nature: DamageNature = DamageNature.NORMAL
 var _damage_queue: Array[BattlePlayer] = []
 var _damage_after: Callable = Callable()
+var _damage_ignore_armor_for: BattlePlayer
 var _dying_after: Callable = Callable()
 
 ## 无懈可击链上下文。
@@ -248,11 +256,15 @@ func can_play_trick(card: Card, user: Node) -> bool:
 		Card.CardType.NULLIFICATION:
 			return false
 		Card.CardType.DISMANTLE:
-			return not target.hand.is_empty() or target.weapon_card != null
+			return target.total_cards_in_hand_and_equipment() > 0
 		Card.CardType.STEAL:
-			return not target.hand.is_empty()
+			return distance_between(owner, target) == 1 and not target.hand.is_empty()
 		Card.CardType.BORROW_SWORD:
-			return target.weapon_card != null
+			return (
+				distance_between(owner, target) == 1
+				and target.weapon != null
+				and can_slash_target(target, owner)
+			)
 		Card.CardType.FIRE_ATTACK:
 			return not target.hand.is_empty() or not owner.hand.is_empty()
 		Card.CardType.INDULGENCE, Card.CardType.SUPPLY_SHORTAGE:
@@ -262,8 +274,74 @@ func can_play_trick(card: Card, user: Node) -> bool:
 	return true
 
 
-func can_equip_weapon(user: Node) -> bool:
+func can_equip(user: Node) -> bool:
 	return is_play_phase_for(user)
+
+
+func can_equip_weapon(user: Node) -> bool:
+	## 兼容旧卡牌脚本调用；所有装备现在均走 can_equip。
+	return can_equip(user)
+
+
+func distance_between(source: BattlePlayer, target: BattlePlayer) -> int:
+	if source == null or target == null or source == target:
+		return 0
+	var distance: int = 1
+	if target.horse_plus != null:
+		distance += 1
+	if source.horse_minus != null:
+		distance -= 1
+	return maxi(distance, 1)
+
+
+func attack_range(player: BattlePlayer) -> int:
+	if player != null and player.weapon != null:
+		return int(player.weapon.attack_range)
+	return 1
+
+
+func can_slash_target(source: BattlePlayer, target: BattlePlayer) -> bool:
+	return (
+		source != null
+		and target != null
+		and source != target
+		and distance_between(source, target) <= attack_range(source)
+	)
+
+
+func can_use_slash_in_play(user: Node) -> bool:
+	if not is_play_phase_for(user):
+		return false
+	var player: BattlePlayer = user as BattlePlayer
+	var unlimited: bool = (
+		player.weapon != null
+		and player.weapon.card_type == Card.CardType.CROSSBOW
+	)
+	return (not player.slash_used_this_turn or unlimited) and can_slash_target(player, other_player(player))
+
+
+func can_use_serpent_spear(player: BattlePlayer) -> bool:
+	if player == null or player.weapon == null or player.weapon.card_type != Card.CardType.SERPENT_SPEAR:
+		return false
+	if player.hand.size() < 2:
+		return false
+	if is_play_phase_for(player):
+		return can_use_slash_in_play(player)
+	return is_waiting_for_slash_from(player)
+
+
+func can_use_bagua(player: BattlePlayer) -> bool:
+	if player == null or player.armor == null or player.armor.card_type != Card.CardType.EIGHT_TRIGRAMS:
+		return false
+	if not is_waiting_for_dodge_from(player):
+		return false
+	if _bagua_attempted:
+		return false
+	return not (
+		flow_state == FlowState.RESPONDING_SLASH
+		and _slash_ignores_armor
+		and player == pending_target
+	)
 
 
 func is_waiting_for_dodge_from(user: Node) -> bool:
@@ -356,7 +434,7 @@ func request_card_on_target(hand_index: int, target_index: int) -> void:
 			return
 		_play_slash(player1, target, hand_index)
 	elif card.category == Card.CardCategory.EQUIPMENT and target == player1:
-		_play_weapon(player1, hand_index)
+		_play_equipment(player1, hand_index)
 	elif card.is_trick():
 		if card.target_mode == Card.TargetMode.SELF and target == player1:
 			_use_self_or_global_trick(player1, hand_index)
@@ -417,6 +495,22 @@ func request_pass_response() -> void:
 	elif flow_state in [FlowState.AOE_RESPONSE, FlowState.DUEL_RESPONSE, FlowState.BORROW_RESPONSE]:
 		if _current_response_player() != null and not _current_response_player().is_ai:
 			_pass_current_response()
+
+
+func request_bagua_judgement() -> void:
+	var defender: BattlePlayer = _current_response_player()
+	if defender == null or defender.is_ai or not can_use_bagua(defender):
+		return
+	_resolve_bagua_judgement(defender)
+
+
+func request_serpent_spear() -> void:
+	var user: BattlePlayer = current_player()
+	if flow_state not in [FlowState.PLAY_ACTIVE, FlowState.SELECTING_TARGET]:
+		user = _current_response_player()
+	if user == null or user.is_ai or not can_use_serpent_spear(user):
+		return
+	_use_serpent_spear(user)
 
 
 func request_response_card() -> void:
@@ -595,12 +689,12 @@ func _activate_play_card(user: BattlePlayer, hand_index: int) -> void:
 			_play_wine(user, hand_index)
 		Card.CardType.DODGE, Card.CardType.NULLIFICATION:
 			_reject("该牌只能在对应的响应时机使用。")
-		Card.CardType.WEAPON:
-			_play_weapon(user, hand_index)
 		Card.CardType.IRON_CHAIN:
 			_begin_iron_chain_choice(user, hand_index)
 		_:
-			if not card.can_use_in_play(self, user):
+			if card.category == Card.CardCategory.EQUIPMENT:
+				_play_equipment(user, hand_index)
+			elif not card.can_use_in_play(self, user):
 				_reject("当前没有【%s】的合法目标。" % card.display_name)
 			elif card.target_mode in [Card.TargetMode.SELF, Card.TargetMode.ALL]:
 				_use_self_or_global_trick(user, hand_index)
@@ -618,13 +712,18 @@ func _select_target(hand_index: int, card: Card) -> void:
 func _is_valid_trick_target(card: Card, source: BattlePlayer, target: BattlePlayer) -> bool:
 	match card.card_type:
 		Card.CardType.DISMANTLE:
-			return target != source and (not target.hand.is_empty() or target.weapon_card != null)
+			return target != source and target.total_cards_in_hand_and_equipment() > 0
 		Card.CardType.STEAL:
-			return target != source and not target.hand.is_empty()
+			return target != source and distance_between(source, target) == 1 and not target.hand.is_empty()
 		Card.CardType.DUEL:
 			return target != source
 		Card.CardType.BORROW_SWORD:
-			return target != source and target.weapon_card != null
+			return (
+				target != source
+				and distance_between(source, target) == 1
+				and target.weapon != null
+				and can_slash_target(target, source)
+			)
 		Card.CardType.FIRE_ATTACK:
 			return not target.hand.is_empty()
 		Card.CardType.INDULGENCE, Card.CardType.SUPPLY_SHORTAGE:
@@ -694,23 +793,31 @@ func _play_wine(user: BattlePlayer, hand_index: int) -> void:
 	_emit_state()
 
 
-func _play_weapon(user: BattlePlayer, hand_index: int) -> void:
-	if not can_equip_weapon(user):
+func _play_equipment(user: BattlePlayer, hand_index: int) -> void:
+	if not can_equip(user):
 		return
-	var weapon: Card = _take_hand_card(user, hand_index)
-	var replaced: Card = user.equip_weapon(weapon)
+	if (
+		hand_index < 0
+		or hand_index >= user.hand.size()
+		or user.hand[hand_index].category != Card.CardCategory.EQUIPMENT
+	):
+		return
+	var equipment: Card = _take_hand_card(user, hand_index)
+	var replaced: Card = user.equip(equipment)
 	if replaced != null:
-		discard_pile.append(replaced)
-		_add_log("%s 替换并弃置原武器【%s】。" % [user.player_name, replaced.display_name])
-	_add_log("%s 装备武器【%s】。" % [user.player_name, weapon.display_name])
+		_lose_equipment(user, replaced, "被同类装备替换")
+	_add_log("%s 装备【%s】到%s。" % [user.player_name, equipment.display_name, _equipment_slot_text(equipment.equipment_slot)])
 	_emit_state()
 	if user.is_ai:
 		_schedule("_perform_ai_play", 0.45)
 
 
 func _play_slash(attacker: BattlePlayer, target: BattlePlayer, hand_index: int) -> void:
-	if attacker == target or attacker.slash_used_this_turn:
+	if attacker == target or not can_use_slash_in_play(attacker):
 		_reject("现在不能使用【杀】。")
+		return
+	if not can_slash_target(attacker, target):
+		_reject("目标距离为 %d，超出攻击范围 %d。" % [distance_between(attacker, target), attack_range(attacker)])
 		return
 	var card: Card = _consume_hand_card(attacker, hand_index)
 	if card == null or card.card_type != Card.CardType.SLASH:
@@ -719,19 +826,35 @@ func _play_slash(attacker: BattlePlayer, target: BattlePlayer, hand_index: int) 
 	selected_hand_index = -1
 	var amount: int = 2 if attacker.wine_active else 1
 	attacker.wine_active = false
-	_add_log("%s 对 %s 使用【杀】%s。" % [
+	var nature: DamageNature = DamageNature.FIRE if _has_equipment(attacker, Card.CardType.VERMILION_FAN) else DamageNature.NORMAL
+	_add_log("%s 对 %s 使用%s【杀】%s（距离 %d / 范围 %d）。" % [
 		attacker.player_name,
 		target.player_name,
+		"火属性" if nature == DamageNature.FIRE else "",
 		"（酒杀，伤害 2）" if amount == 2 else "",
+		distance_between(attacker, target),
+		attack_range(attacker),
 	])
-	_start_slash_response(attacker, target, amount, Callable(self, "_return_to_play"))
+	_start_slash_response(attacker, target, amount, Callable(self, "_return_to_play"), nature)
 
 
-func _start_slash_response(attacker: BattlePlayer, target: BattlePlayer, amount: int, after: Callable) -> void:
+func _start_slash_response(
+	attacker: BattlePlayer,
+	target: BattlePlayer,
+	amount: int,
+	after: Callable,
+	nature: DamageNature = DamageNature.NORMAL
+) -> void:
 	pending_attacker = attacker
 	pending_target = target
 	pending_damage = amount
 	_attack_after = after
+	_attack_nature = nature
+	_slash_ignores_armor = _has_equipment(attacker, Card.CardType.QINGGANG_SWORD)
+	_ice_sword_checked = false
+	_bagua_attempted = false
+	if _slash_ignores_armor:
+		_add_log("【青釭剑】锁定技：本次【杀】无视 %s 的防具。" % target.player_name)
 	flow_state = FlowState.RESPONDING_SLASH
 	_emit_state()
 	if target.is_ai:
@@ -741,14 +864,144 @@ func _start_slash_response(attacker: BattlePlayer, target: BattlePlayer, amount:
 func _resolve_slash_dodge(dodge_index: int) -> void:
 	var defender: BattlePlayer = pending_target
 	_consume_hand_card(defender, dodge_index)
-	_add_log("%s 使用【闪】，本次【杀】无效。" % defender.player_name)
+	_add_log("%s 使用【闪】，抵消本次【杀】。" % defender.player_name)
+	_handle_slash_dodged()
+
+
+func _handle_slash_dodged() -> void:
+	var attacker: BattlePlayer = pending_attacker
+	if _has_equipment(attacker, Card.CardType.GREEN_DRAGON_BLADE) and _can_supply_slash(attacker):
+		_pending_weapon_skill = Card.CardType.GREEN_DRAGON_BLADE
+		_show_choices(attacker, ["发动【青龙偃月刀】继续出杀", "结束本次攻击"], Callable(self, "_resolve_after_dodge_weapon"))
+		return
+	if (
+		_has_equipment(attacker, Card.CardType.ROCK_CLEAVING_AXE)
+		and attacker.total_cards_in_hand_and_equipment() >= 2
+	):
+		_pending_weapon_skill = Card.CardType.ROCK_CLEAVING_AXE
+		_show_choices(attacker, ["弃两张牌发动【贯石斧】", "结束本次攻击"], Callable(self, "_resolve_after_dodge_weapon"))
+		return
+	_add_log("本次【杀】被【闪】抵消。")
 	_finish_attack()
 
 
-func _resolve_slash_damage() -> void:
+func _resolve_after_dodge_weapon(option_index: int) -> void:
+	if option_index != 0:
+		_add_log("%s 放弃发动武器技能。" % pending_attacker.player_name)
+		_finish_attack()
+		return
+	if _pending_weapon_skill == Card.CardType.GREEN_DRAGON_BLADE:
+		_use_follow_up_slash()
+	elif _pending_weapon_skill == Card.CardType.ROCK_CLEAVING_AXE:
+		var discarded: Array[Card] = _discard_n_cards(pending_attacker, 2)
+		if discarded.size() < 2:
+			_add_log("可弃置牌不足，【贯石斧】发动失败。")
+			_finish_attack()
+			return
+		_add_log("%s 弃置%s，发动【贯石斧】：【杀】依然命中。" % [
+			pending_attacker.player_name,
+			_card_list_text(discarded),
+		])
+		_resolve_slash_damage()
+
+
+func _use_follow_up_slash() -> void:
+	var attacker: BattlePlayer = pending_attacker
+	var target: BattlePlayer = pending_target
 	var after: Callable = _attack_after
-	_start_damage(pending_attacker, pending_target, pending_damage, DamageNature.NORMAL, after)
-	_clear_attack_context()
+	var slash_index: int = attacker.find_card(Card.CardType.SLASH)
+	if slash_index >= 0:
+		_consume_hand_card(attacker, slash_index)
+	else:
+		var paid: Array[Card] = _consume_serpent_spear_cost(attacker)
+		if paid.size() < 2:
+			_finish_attack()
+			return
+	_add_log("%s 发动【青龙偃月刀】，继续对 %s 使用【杀】。" % [attacker.player_name, target.player_name])
+	var nature: DamageNature = DamageNature.FIRE if _has_equipment(attacker, Card.CardType.VERMILION_FAN) else DamageNature.NORMAL
+	_start_slash_response(attacker, target, 1, after, nature)
+
+
+func _resolve_slash_damage() -> void:
+	if (
+		not _ice_sword_checked
+		and _has_equipment(pending_attacker, Card.CardType.ICE_SWORD)
+		and pending_target.total_cards_in_hand_and_equipment() >= 2
+	):
+		_ice_sword_checked = true
+		_show_choices(
+			pending_attacker,
+			["发动【寒冰剑】防止伤害并弃其两张牌", "正常造成伤害"],
+			Callable(self, "_resolve_ice_sword_choice")
+		)
+		return
+	var ignore_for: BattlePlayer = pending_target if _slash_ignores_armor else null
+	_start_damage(
+		pending_attacker,
+		pending_target,
+		pending_damage,
+		_attack_nature,
+		Callable(self, "_after_slash_damage"),
+		ignore_for
+	)
+
+
+func _resolve_ice_sword_choice(option_index: int) -> void:
+	if option_index == 0:
+		var discarded: Array[Card] = _discard_n_cards(pending_target, 2)
+		_add_log("%s 发动【寒冰剑】，防止本次伤害并弃置 %s 的%s。" % [
+			pending_attacker.player_name,
+			pending_target.player_name,
+			_card_list_text(discarded),
+		])
+		_finish_attack()
+	else:
+		_resolve_slash_damage()
+
+
+func _after_slash_damage() -> void:
+	if (
+		pending_attacker != null
+		and pending_target != null
+		and _has_equipment(pending_attacker, Card.CardType.QILIN_BOW)
+		and (pending_target.horse_plus != null or pending_target.horse_minus != null)
+	):
+		var labels: Array[String] = []
+		_zone_choice_codes.clear()
+		if pending_target.horse_plus != null:
+			labels.append("弃置其【+1马】")
+			_zone_choice_codes.append("horse_plus")
+		if pending_target.horse_minus != null:
+			labels.append("弃置其【-1马】")
+			_zone_choice_codes.append("horse_minus")
+		labels.append("不发动【麒麟弓】")
+		_zone_choice_codes.append("pass")
+		_show_choices(pending_attacker, labels, Callable(self, "_resolve_qilin_bow_choice"))
+		return
+	_finish_attack()
+
+
+func _resolve_qilin_bow_choice(option_index: int) -> void:
+	if option_index >= 0 and option_index < _zone_choice_codes.size():
+		var code: String = _zone_choice_codes[option_index]
+		var slot: int
+		if code == "horse_plus":
+			slot = EquipmentScript.Slot.HORSE_PLUS
+		elif code == "horse_minus":
+			slot = EquipmentScript.Slot.HORSE_MINUS
+		else:
+			_add_log("%s 不发动【麒麟弓】。" % pending_attacker.player_name)
+			_finish_attack()
+			return
+		var removed: Card = pending_target.remove_equipment(slot)
+		if removed != null:
+			_lose_equipment(pending_target, removed, "被【麒麟弓】弃置")
+			_add_log("%s 发动【麒麟弓】，弃置 %s 的【%s】。" % [
+				pending_attacker.player_name,
+				pending_target.player_name,
+				removed.display_name,
+			])
+	_finish_attack()
 
 
 func _finish_attack() -> void:
@@ -762,6 +1015,10 @@ func _clear_attack_context() -> void:
 	pending_target = null
 	pending_damage = 0
 	_attack_after = Callable()
+	_attack_nature = DamageNature.NORMAL
+	_slash_ignores_armor = false
+	_ice_sword_checked = false
+	_bagua_attempted = false
 
 
 func _start_nullifiable_effect(
@@ -864,9 +1121,9 @@ func _apply_dismantle() -> void:
 	if not target.hand.is_empty():
 		_zone_choice_codes.append("hand")
 		labels.append("弃置其随机手牌")
-	if target.weapon_card != null:
-		_zone_choice_codes.append("weapon")
-		labels.append("弃置武器【%s】" % target.weapon_card.display_name)
+	for entry: Dictionary in _equipment_choice_entries(target):
+		_zone_choice_codes.append(entry["code"])
+		labels.append("弃置%s【%s】" % [entry["slot_name"], (entry["card"] as Card).display_name])
 	if labels.size() == 1:
 		_resolve_dismantle_choice(0)
 	else:
@@ -878,15 +1135,21 @@ func _resolve_dismantle_choice(option_index: int) -> void:
 		_finish_nullifiable_effect()
 		return
 	var code: String = _zone_choice_codes[option_index]
-	if code == "weapon" and _effect_target.weapon_card != null:
-		var weapon: Card = _effect_target.lose_weapon()
-		discard_pile.append(weapon)
-		_add_log("%s 弃置了 %s 的武器【%s】。" % [_effect_source.player_name, _effect_target.player_name, weapon.display_name])
-	elif code == "hand" and not _effect_target.hand.is_empty():
+	if code == "hand" and not _effect_target.hand.is_empty():
 		var index: int = randi_range(0, _effect_target.hand.size() - 1)
 		var removed: Card = _effect_target.remove_card_at(index)
 		discard_pile.append(removed)
 		_add_log("%s 随机弃置了 %s 的一张手牌。" % [_effect_source.player_name, _effect_target.player_name])
+	else:
+		var slot: int = _slot_from_code(code)
+		var equipment: Card = _effect_target.remove_equipment(slot)
+		if equipment != null:
+			_lose_equipment(_effect_target, equipment, "被【过河拆桥】弃置")
+			_add_log("%s 弃置了 %s 的【%s】。" % [
+				_effect_source.player_name,
+				_effect_target.player_name,
+				equipment.display_name,
+			])
 	_finish_nullifiable_effect()
 
 
@@ -914,7 +1177,7 @@ func _apply_duel() -> void:
 func _apply_borrow_sword() -> void:
 	_borrow_source = _effect_source
 	_borrow_target = _effect_target
-	if _borrow_target.weapon_card == null:
+	if _borrow_target.weapon == null:
 		_add_log("目标已失去武器，【借刀杀人】结束。")
 		_finish_nullifiable_effect()
 		return
@@ -924,7 +1187,7 @@ func _apply_borrow_sword() -> void:
 		_schedule("_perform_ai_response", 0.55)
 	else:
 		var labels: Array[String] = []
-		if _borrow_target.find_card(Card.CardType.SLASH) >= 0:
+		if _can_supply_slash(_borrow_target):
 			labels.append("对使用者打出【杀】")
 		labels.append("交出武器")
 		_show_choices(_borrow_target, labels, Callable(self, "_resolve_borrow_choice"))
@@ -940,15 +1203,19 @@ func _resolve_borrow_choice(option_index: int) -> void:
 func _borrow_use_slash() -> void:
 	var slash_index: int = _borrow_target.find_card(Card.CardType.SLASH)
 	if slash_index < 0:
+		if can_use_serpent_spear(_borrow_target):
+			_use_serpent_spear(_borrow_target)
+			return
 		_borrow_give_weapon()
 		return
 	_consume_hand_card(_borrow_target, slash_index)
 	_add_log("%s 响应【借刀杀人】，对 %s 使用【杀】。" % [_borrow_target.player_name, _borrow_source.player_name])
-	_start_slash_response(_borrow_target, _borrow_source, 1, Callable(self, "_finish_nullifiable_effect"))
+	var nature: DamageNature = DamageNature.FIRE if _has_equipment(_borrow_target, Card.CardType.VERMILION_FAN) else DamageNature.NORMAL
+	_start_slash_response(_borrow_target, _borrow_source, 1, Callable(self, "_finish_nullifiable_effect"), nature)
 
 
 func _borrow_give_weapon() -> void:
-	var weapon: Card = _borrow_target.lose_weapon()
+	var weapon: Card = _borrow_target.remove_equipment(EquipmentScript.Slot.WEAPON)
 	if weapon != null:
 		_borrow_source.add_card(weapon)
 		_add_log("%s 未出【杀】，将武器【%s】交给 %s。" % [_borrow_target.player_name, weapon.display_name, _borrow_source.player_name])
@@ -1053,10 +1320,42 @@ func _process_next_global_target() -> void:
 func _apply_aoe(required_type: Card.CardType) -> void:
 	_response_card_type = required_type
 	pending_target = _effect_target
+	_bagua_attempted = false
+	if _has_equipment(pending_target, Card.CardType.VINE_ARMOR):
+		_add_log("【藤甲】锁定技：【%s】对 %s 无效。" % [_effect_card.display_name, pending_target.player_name])
+		_finish_nullifiable_effect()
+		return
 	flow_state = FlowState.AOE_RESPONSE
 	_emit_state()
 	if pending_target.is_ai:
 		_schedule("_perform_ai_response", 0.5)
+
+
+func _resolve_bagua_judgement(defender: BattlePlayer) -> void:
+	if not can_use_bagua(defender):
+		return
+	_bagua_attempted = true
+	var judged: Card = _draw_one_from_pile()
+	if judged == null:
+		_add_log("牌堆无牌，【八卦阵】判定失败。")
+		return
+	discard_pile.append(judged)
+	_add_log("%s 发动【八卦阵】，判定为%s（%s）。" % [
+		defender.player_name,
+		judged.identity_text(),
+		"红色" if judged.is_red() else "黑色",
+	])
+	if judged.is_red():
+		_add_log("【八卦阵】判定成功，视为 %s 打出【闪】。" % defender.player_name)
+		if flow_state == FlowState.RESPONDING_SLASH:
+			_handle_slash_dodged()
+		elif flow_state == FlowState.AOE_RESPONSE:
+			_finish_nullifiable_effect()
+	else:
+		_add_log("【八卦阵】判定失败，仍可从手牌打出【闪】。")
+		_emit_state()
+		if defender.is_ai:
+			_schedule("_perform_ai_response", 0.35)
 
 
 func _apply_peach_garden() -> void:
@@ -1351,12 +1650,14 @@ func _start_damage(
 	target: BattlePlayer,
 	amount: int,
 	nature: DamageNature,
-	after: Callable
+	after: Callable,
+	ignore_armor_for: BattlePlayer = null
 ) -> void:
 	_damage_source = source
 	_damage_amount = amount
 	_damage_nature = nature
 	_damage_after = after
+	_damage_ignore_armor_for = ignore_armor_for
 	_damage_queue.clear()
 	if nature != DamageNature.NORMAL and target.chained:
 		_damage_queue.append(target)
@@ -1377,13 +1678,22 @@ func _process_damage_queue() -> void:
 	if _damage_queue.is_empty():
 		var after: Callable = _damage_after
 		_damage_after = Callable()
+		_damage_ignore_armor_for = null
 		_call_safe(after)
 		return
 	var target: BattlePlayer = _damage_queue.pop_front()
-	target.take_damage(_damage_amount)
+	var actual_amount: int = _damage_amount
+	var armor_ignored: bool = target == _damage_ignore_armor_for
+	if not armor_ignored and _has_equipment(target, Card.CardType.VINE_ARMOR) and _damage_nature == DamageNature.FIRE:
+		actual_amount += 1
+		_add_log("【藤甲】锁定技：%s 受到的火焰伤害 +1。" % target.player_name)
+	if not armor_ignored and _has_equipment(target, Card.CardType.SILVER_LION) and actual_amount > 1:
+		_add_log("【白银狮子】锁定技：%s 本次伤害由 %d 限制为 1。" % [target.player_name, actual_amount])
+		actual_amount = 1
+	target.take_damage(actual_amount)
 	_add_log("%s 受到 %d 点%s伤害，当前体力 %d/%d。" % [
 		target.player_name,
-		_damage_amount,
+		actual_amount,
 		_nature_text(_damage_nature),
 		target.hp,
 		target.max_hp,
@@ -1449,6 +1759,8 @@ func _perform_ai_response() -> void:
 			var dodge_index: int = pending_target.find_card(Card.CardType.DODGE)
 			if dodge_index >= 0:
 				_resolve_slash_dodge(dodge_index)
+			elif can_use_bagua(pending_target):
+				_resolve_bagua_judgement(pending_target)
 			else:
 				_add_log("%s 没有【闪】。" % pending_target.player_name)
 				_resolve_slash_damage()
@@ -1456,15 +1768,21 @@ func _perform_ai_response() -> void:
 			var aoe_index: int = pending_target.find_card(_response_card_type)
 			if aoe_index >= 0:
 				request_response_card()
+			elif _response_card_type == Card.CardType.DODGE and can_use_bagua(pending_target):
+				_resolve_bagua_judgement(pending_target)
+			elif _response_card_type == Card.CardType.SLASH and can_use_serpent_spear(pending_target):
+				_use_serpent_spear(pending_target)
 			else:
 				_pass_current_response()
 		FlowState.DUEL_RESPONSE:
 			if _duel_responder.find_card(Card.CardType.SLASH) >= 0:
 				request_response_card()
+			elif can_use_serpent_spear(_duel_responder):
+				_use_serpent_spear(_duel_responder)
 			else:
 				_pass_current_response()
 		FlowState.BORROW_RESPONSE:
-			if _borrow_target.find_card(Card.CardType.SLASH) >= 0:
+			if _can_supply_slash(_borrow_target):
 				_borrow_use_slash()
 			else:
 				_borrow_give_weapon()
@@ -1509,9 +1827,9 @@ func _perform_ai_play() -> void:
 			_schedule("_perform_ai_play", 0.4)
 			return
 
-	var weapon_index: int = ai.find_card(Card.CardType.WEAPON)
-	if weapon_index >= 0 and ai.weapon_card == null:
-		_play_weapon(ai, weapon_index)
+	var equipment_index: int = _find_equipment_in_hand(ai)
+	if equipment_index >= 0:
+		_play_equipment(ai, equipment_index)
 		return
 
 	var self_tricks: Array[Card.CardType] = [Card.CardType.DRAW_TWO, Card.CardType.AMAZING_GRACE]
@@ -1566,13 +1884,16 @@ func _perform_ai_play() -> void:
 		return
 
 	var slash_index: int = ai.find_card(Card.CardType.SLASH)
-	if slash_index >= 0 and not ai.slash_used_this_turn:
+	if slash_index >= 0 and can_use_slash_in_play(ai):
 		var wine_index: int = ai.find_card(Card.CardType.WINE)
 		if wine_index >= 0 and not ai.wine_active:
 			_play_wine(ai, wine_index)
 			_schedule("_perform_ai_play", 0.4)
 			return
 		_play_slash(ai, enemy, slash_index)
+		return
+	if can_use_serpent_spear(ai):
+		_use_serpent_spear(ai)
 		return
 	_enter_discard_phase()
 
@@ -1633,6 +1954,150 @@ func _consume_hand_card(player: BattlePlayer, hand_index: int) -> Card:
 	return card
 
 
+func _has_equipment(player: BattlePlayer, card_type: Card.CardType) -> bool:
+	if player == null:
+		return false
+	for equipment: Card in player.all_equipment():
+		if equipment.card_type == card_type:
+			return true
+	return false
+
+
+func _find_equipment_in_hand(player: BattlePlayer) -> int:
+	for index: int in player.hand.size():
+		if player.hand[index].category == Card.CardCategory.EQUIPMENT:
+			return index
+	return -1
+
+
+func _equipment_slot_text(slot: int) -> String:
+	match slot:
+		EquipmentScript.Slot.WEAPON:
+			return "武器区"
+		EquipmentScript.Slot.ARMOR:
+			return "防具区"
+		EquipmentScript.Slot.HORSE_PLUS:
+			return "+1马区"
+		EquipmentScript.Slot.HORSE_MINUS:
+			return "-1马区"
+	return "装备区"
+
+
+func _equipment_choice_entries(player: BattlePlayer) -> Array[Dictionary]:
+	var entries: Array[Dictionary] = []
+	if player.weapon != null:
+		entries.append({"code": "weapon", "slot_name": "武器", "card": player.weapon})
+	if player.armor != null:
+		entries.append({"code": "armor", "slot_name": "防具", "card": player.armor})
+	if player.horse_plus != null:
+		entries.append({"code": "horse_plus", "slot_name": "+1马", "card": player.horse_plus})
+	if player.horse_minus != null:
+		entries.append({"code": "horse_minus", "slot_name": "-1马", "card": player.horse_minus})
+	return entries
+
+
+func _slot_from_code(code: String) -> int:
+	match code:
+		"armor":
+			return EquipmentScript.Slot.ARMOR
+		"horse_plus":
+			return EquipmentScript.Slot.HORSE_PLUS
+		"horse_minus":
+			return EquipmentScript.Slot.HORSE_MINUS
+	return EquipmentScript.Slot.WEAPON
+
+
+func _lose_equipment(owner: BattlePlayer, equipment: Card, reason: String) -> void:
+	if equipment == null:
+		return
+	discard_pile.append(equipment)
+	_add_log("%s 的【%s】%s，进入弃牌堆。" % [owner.player_name, equipment.display_name, reason])
+	if equipment.card_type == Card.CardType.SILVER_LION and owner.hp < owner.max_hp:
+		owner.recover(1)
+		_add_log("【白银狮子】离开装备区，%s 回复1点体力至 %d/%d。" % [
+			owner.player_name,
+			owner.hp,
+			owner.max_hp,
+		])
+
+
+func _discard_n_cards(player: BattlePlayer, count: int) -> Array[Card]:
+	var discarded: Array[Card] = []
+	while discarded.size() < count and not player.hand.is_empty():
+		var hand_card: Card = player.remove_card_at(player.hand.size() - 1)
+		discard_pile.append(hand_card)
+		discarded.append(hand_card)
+	var slot_order: Array[int] = [
+		EquipmentScript.Slot.HORSE_PLUS,
+		EquipmentScript.Slot.HORSE_MINUS,
+		EquipmentScript.Slot.ARMOR,
+		EquipmentScript.Slot.WEAPON,
+	]
+	for slot: int in slot_order:
+		if discarded.size() >= count:
+			break
+		var equipment: Card = player.remove_equipment(slot)
+		if equipment != null:
+			_lose_equipment(player, equipment, "被弃置")
+			discarded.append(equipment)
+	return discarded
+
+
+func _can_supply_slash(player: BattlePlayer) -> bool:
+	return player.find_card(Card.CardType.SLASH) >= 0 or (
+		_has_equipment(player, Card.CardType.SERPENT_SPEAR)
+		and player.hand.size() >= 2
+	)
+
+
+func _consume_serpent_spear_cost(player: BattlePlayer) -> Array[Card]:
+	var paid: Array[Card] = []
+	for _index: int in 2:
+		if player.hand.is_empty():
+			break
+		var card: Card = _consume_hand_card(player, player.hand.size() - 1)
+		if card != null:
+			paid.append(card)
+	return paid
+
+
+func _use_serpent_spear(user: BattlePlayer) -> void:
+	if not can_use_serpent_spear(user):
+		return
+	var paid: Array[Card] = _consume_serpent_spear_cost(user)
+	if paid.size() < 2:
+		return
+	_add_log("%s 弃置%s，发动【丈八蛇矛】视为使用/打出【杀】。" % [
+		user.player_name,
+		_card_list_text(paid),
+	])
+	if is_play_phase_for(user):
+		var target: BattlePlayer = other_player(user)
+		user.slash_used_this_turn = true
+		var amount: int = 2 if user.wine_active else 1
+		user.wine_active = false
+		var nature: DamageNature = DamageNature.FIRE if _has_equipment(user, Card.CardType.VERMILION_FAN) else DamageNature.NORMAL
+		_start_slash_response(user, target, amount, Callable(self, "_return_to_play"), nature)
+		return
+	match flow_state:
+		FlowState.AOE_RESPONSE:
+			_finish_nullifiable_effect()
+		FlowState.DUEL_RESPONSE:
+			var previous: BattlePlayer = _duel_responder
+			_duel_responder = _duel_other
+			_duel_other = previous
+			flow_state = FlowState.DUEL_RESPONSE
+			_emit_state()
+			if _duel_responder.is_ai:
+				_schedule("_perform_ai_response", 0.45)
+		FlowState.BORROW_RESPONSE:
+			_add_log("%s 以【丈八蛇矛】响应【借刀杀人】，对 %s 使用【杀】。" % [
+				_borrow_target.player_name,
+				_borrow_source.player_name,
+			])
+			_start_slash_response(_borrow_target, _borrow_source, 1, Callable(self, "_finish_nullifiable_effect"))
+
+
 func _draw_one_from_pile() -> Card:
 	if draw_pile.is_empty():
 		_refill_draw_pile()
@@ -1686,7 +2151,12 @@ func _ai_card_value(card: Card) -> int:
 			return 65
 		Card.CardType.WINE:
 			return 60
-		Card.CardType.WEAPON:
+		Card.CardType.CROSSBOW, Card.CardType.QINGGANG_SWORD, Card.CardType.ICE_SWORD, \
+		Card.CardType.GREEN_DRAGON_BLADE, Card.CardType.SERPENT_SPEAR, \
+		Card.CardType.ROCK_CLEAVING_AXE, Card.CardType.HALBERD, \
+		Card.CardType.VERMILION_FAN, Card.CardType.QILIN_BOW, \
+		Card.CardType.EIGHT_TRIGRAMS, Card.CardType.VINE_ARMOR, \
+		Card.CardType.SILVER_LION, Card.CardType.HORSE_PLUS, Card.CardType.HORSE_MINUS:
 			return 55
 	return 45
 

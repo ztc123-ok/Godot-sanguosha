@@ -163,7 +163,7 @@ theme_override_constants/separation = 20
 layout_mode = 2
 theme_override_colors/font_color = Color(0.95, 0.79, 0.43, 1)
 theme_override_font_sizes/font_size = 25
-text = "三国杀 · 二人标准锦囊版"
+text = "三国杀 · 二人完整卡牌版"
 
 [node name="Spacer" type="Control" parent="UIManager/Root/Margin/Layout/Header/HeaderMargin/HeaderRow"]
 layout_mode = 2
@@ -466,6 +466,20 @@ visible = false
 custom_minimum_size = Vector2(130, 38)
 layout_mode = 2
 text = "放弃火攻弃牌"
+
+[node name="BaguaButton" type="Button" parent="UIManager/Root/Margin/Layout/ActionBar"]
+unique_name_in_owner = true
+visible = false
+custom_minimum_size = Vector2(126, 38)
+layout_mode = 2
+text = "发动【八卦阵】"
+
+[node name="SerpentSpearButton" type="Button" parent="UIManager/Root/Margin/Layout/ActionBar"]
+unique_name_in_owner = true
+visible = false
+custom_minimum_size = Vector2(150, 38)
+layout_mode = 2
+text = "丈八两牌当【杀】"
 
 [node name="ChoiceButton0" type="Button" parent="UIManager/Root/Margin/Layout/ActionBar"]
 unique_name_in_owner = true

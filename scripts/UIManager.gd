@@ -32,6 +32,8 @@ extends CanvasLayer
 @onready var nullification_button: Button = %NullificationButton
 @onready var pass_nullification_button: Button = %PassNullificationButton
 @onready var fire_pass_button: Button = %FirePassButton
+@onready var bagua_button: Button = %BaguaButton
+@onready var serpent_spear_button: Button = %SerpentSpearButton
 @onready var choice_buttons: Array[Button] = [
 	%ChoiceButton0,
 	%ChoiceButton1,
@@ -60,6 +62,8 @@ func _ready() -> void:
 	nullification_button.pressed.connect(_on_nullification)
 	pass_nullification_button.pressed.connect(_on_pass_nullification)
 	fire_pass_button.pressed.connect(_on_fire_pass)
+	bagua_button.pressed.connect(_on_bagua)
+	serpent_spear_button.pressed.connect(_on_serpent_spear)
 	for index: int in choice_buttons.size():
 		choice_buttons[index].pressed.connect(_on_choice.bind(index))
 
@@ -155,6 +159,8 @@ func _update_actions(human: BattlePlayer) -> void:
 		nullification_button,
 		pass_nullification_button,
 		fire_pass_button,
+		bagua_button,
+		serpent_spear_button,
 	]
 	all_buttons.append_array(choice_buttons)
 	for button: Button in all_buttons:
@@ -170,6 +176,8 @@ func _update_actions(human: BattlePlayer) -> void:
 	)
 	end_play_button.visible = is_human_play
 	cancel_button.visible = game.flow_state == GameManager.FlowState.SELECTING_TARGET
+	serpent_spear_button.visible = is_human_play and game.can_use_serpent_spear(human)
+	serpent_spear_button.text = "丈八两牌当【杀】"
 
 	var responding_to_slash := (
 		game.flow_state == GameManager.FlowState.RESPONDING_SLASH
@@ -179,6 +187,7 @@ func _update_actions(human: BattlePlayer) -> void:
 	pass_button.visible = responding_to_slash
 	pass_button.text = "不使用闪"
 	dodge_button.disabled = human.find_card(Card.CardType.DODGE) < 0
+	bagua_button.visible = responding_to_slash and game.can_use_bagua(human)
 
 	var aoe_response := (
 		game.flow_state == GameManager.FlowState.AOE_RESPONSE
@@ -188,9 +197,11 @@ func _update_actions(human: BattlePlayer) -> void:
 		if game._response_card_type == Card.CardType.DODGE:
 			dodge_button.visible = true
 			dodge_button.disabled = human.find_card(Card.CardType.DODGE) < 0
+			bagua_button.visible = game.can_use_bagua(human)
 		else:
 			slash_response_button.visible = true
 			slash_response_button.disabled = human.find_card(Card.CardType.SLASH) < 0
+			serpent_spear_button.visible = game.can_use_serpent_spear(human)
 		pass_button.visible = true
 		pass_button.text = "不响应"
 
@@ -201,6 +212,7 @@ func _update_actions(human: BattlePlayer) -> void:
 	if duel_response:
 		slash_response_button.visible = true
 		slash_response_button.disabled = human.find_card(Card.CardType.SLASH) < 0
+		serpent_spear_button.visible = game.can_use_serpent_spear(human)
 		pass_button.visible = true
 		pass_button.text = "不出【杀】"
 
@@ -236,8 +248,11 @@ func _update_actions(human: BattlePlayer) -> void:
 
 func _status_text(player: BattlePlayer) -> String:
 	var states: PackedStringArray = []
-	states.append("连环：%s" % ("横置" if player.chained else "未横置"))
-	states.append("武器：%s" % (player.weapon_card.display_name if player.weapon_card != null else "无"))
+	states.append("链:%s" % ("横" if player.chained else "未"))
+	states.append("武:%s" % (player.weapon.display_name if player.weapon != null else "无"))
+	states.append("防:%s" % (player.armor.display_name if player.armor != null else "无"))
+	states.append("+1:%s" % (player.horse_plus.display_name if player.horse_plus != null else "无"))
+	states.append("-1:%s" % (player.horse_minus.display_name if player.horse_minus != null else "无"))
 	var delayed: PackedStringArray = []
 	if player.indulgence_card != null:
 		delayed.append("乐")
@@ -245,8 +260,8 @@ func _status_text(player: BattlePlayer) -> String:
 		delayed.append("兵")
 	if player.lightning_card != null:
 		delayed.append("闪电")
-	states.append("判定区：%s" % ("空" if delayed.is_empty() else "/".join(delayed)))
-	return "  ·  ".join(states)
+	states.append("判:%s" % ("空" if delayed.is_empty() else "/".join(delayed)))
+	return " · ".join(states)
 
 
 func _update_target_highlight() -> void:
@@ -316,6 +331,14 @@ func _on_pass_nullification() -> void:
 
 func _on_fire_pass() -> void:
 	game.request_pass_fire_discard()
+
+
+func _on_bagua() -> void:
+	game.request_bagua_judgement()
+
+
+func _on_serpent_spear() -> void:
+	game.request_serpent_spear()
 
 
 func _on_choice(index: int) -> void:

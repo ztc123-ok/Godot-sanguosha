@@ -129,8 +129,34 @@ func _short_rule(card_type: Card.CardType) -> String:
 			return "判定非梅花\n跳过\n摸牌阶段"
 		Card.CardType.LIGHTNING:
 			return "黑桃 2~9\n受到 3 点\n雷电伤害"
-		Card.CardType.WEAPON:
-			return "装备武器\n攻击范围 2\n可被借刀"
+		Card.CardType.CROSSBOW:
+			return "范围 1\n出牌阶段\n无限使用【杀】"
+		Card.CardType.QINGGANG_SWORD:
+			return "范围 2\n你的【杀】\n无视防具"
+		Card.CardType.ICE_SWORD:
+			return "范围 2\n防止伤害\n弃目标两牌"
+		Card.CardType.GREEN_DRAGON_BLADE:
+			return "范围 3\n杀被闪后\n可继续出杀"
+		Card.CardType.SERPENT_SPEAR:
+			return "范围 3\n两张手牌\n当【杀】"
+		Card.CardType.ROCK_CLEAVING_AXE:
+			return "范围 3\n弃两张牌\n强制命中"
+		Card.CardType.HALBERD:
+			return "范围 4\n多目标技能\n双人局无效"
+		Card.CardType.VERMILION_FAN:
+			return "范围 4\n普通【杀】\n视为火杀"
+		Card.CardType.QILIN_BOW:
+			return "范围 5\n杀造成伤害\n可弃目标马"
+		Card.CardType.EIGHT_TRIGRAMS:
+			return "需要【闪】时\n红色判定\n视为【闪】"
+		Card.CardType.VINE_ARMOR:
+			return "免疫南蛮万箭\n受到火焰\n伤害 +1"
+		Card.CardType.SILVER_LION:
+			return "每次伤害至多1\n失去时\n回复1体力"
+		Card.CardType.HORSE_PLUS:
+			return "防御坐骑\n别人到你的\n距离 +1"
+		Card.CardType.HORSE_MINUS:
+			return "进攻坐骑\n你到别人的\n距离 -1"
 	return ""
 
 

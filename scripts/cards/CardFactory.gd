@@ -2,6 +2,21 @@ class_name CardFactory
 extends RefCounted
 ## 基础牌堆工厂。仅生成本版本实现的四种基础牌。
 
+const CROSSBOW_SCRIPT = preload("res://scripts/cards/equipment/weapons/Crossbow.gd")
+const QINGGANG_SWORD_SCRIPT = preload("res://scripts/cards/equipment/weapons/QinggangSword.gd")
+const ICE_SWORD_SCRIPT = preload("res://scripts/cards/equipment/weapons/IceSword.gd")
+const GREEN_DRAGON_BLADE_SCRIPT = preload("res://scripts/cards/equipment/weapons/GreenDragonBlade.gd")
+const SERPENT_SPEAR_SCRIPT = preload("res://scripts/cards/equipment/weapons/SerpentSpear.gd")
+const ROCK_CLEAVING_AXE_SCRIPT = preload("res://scripts/cards/equipment/weapons/RockCleavingAxe.gd")
+const HALBERD_SCRIPT = preload("res://scripts/cards/equipment/weapons/Halberd.gd")
+const VERMILION_FAN_SCRIPT = preload("res://scripts/cards/equipment/weapons/VermilionFan.gd")
+const QILIN_BOW_SCRIPT = preload("res://scripts/cards/equipment/weapons/QilinBow.gd")
+const EIGHT_TRIGRAMS_SCRIPT = preload("res://scripts/cards/equipment/armors/EightTrigrams.gd")
+const VINE_ARMOR_SCRIPT = preload("res://scripts/cards/equipment/armors/VineArmor.gd")
+const SILVER_LION_SCRIPT = preload("res://scripts/cards/equipment/armors/SilverLion.gd")
+const DEFENSIVE_HORSE_SCRIPT = preload("res://scripts/cards/equipment/horses/DefensiveHorse.gd")
+const OFFENSIVE_HORSE_SCRIPT = preload("res://scripts/cards/equipment/horses/OffensiveHorse.gd")
+
 
 static func create_card(card_type: Card.CardType) -> Card:
 	match card_type:
@@ -43,8 +58,34 @@ static func create_card(card_type: Card.CardType) -> Card:
 			return SupplyShortageCard.new()
 		Card.CardType.LIGHTNING:
 			return LightningCard.new()
-		Card.CardType.WEAPON:
-			return WeaponCard.new()
+		Card.CardType.CROSSBOW:
+			return CROSSBOW_SCRIPT.new()
+		Card.CardType.QINGGANG_SWORD:
+			return QINGGANG_SWORD_SCRIPT.new()
+		Card.CardType.ICE_SWORD:
+			return ICE_SWORD_SCRIPT.new()
+		Card.CardType.GREEN_DRAGON_BLADE:
+			return GREEN_DRAGON_BLADE_SCRIPT.new()
+		Card.CardType.SERPENT_SPEAR:
+			return SERPENT_SPEAR_SCRIPT.new()
+		Card.CardType.ROCK_CLEAVING_AXE:
+			return ROCK_CLEAVING_AXE_SCRIPT.new()
+		Card.CardType.HALBERD:
+			return HALBERD_SCRIPT.new()
+		Card.CardType.VERMILION_FAN:
+			return VERMILION_FAN_SCRIPT.new()
+		Card.CardType.QILIN_BOW:
+			return QILIN_BOW_SCRIPT.new()
+		Card.CardType.EIGHT_TRIGRAMS:
+			return EIGHT_TRIGRAMS_SCRIPT.new()
+		Card.CardType.VINE_ARMOR:
+			return VINE_ARMOR_SCRIPT.new()
+		Card.CardType.SILVER_LION:
+			return SILVER_LION_SCRIPT.new()
+		Card.CardType.HORSE_PLUS:
+			return DEFENSIVE_HORSE_SCRIPT.new()
+		Card.CardType.HORSE_MINUS:
+			return OFFENSIVE_HORSE_SCRIPT.new()
 	return SlashCard.new()
 
 
@@ -69,7 +110,20 @@ static func create_basic_deck() -> Array[Card]:
 	_append_cards(deck, Card.CardType.INDULGENCE, 3)
 	_append_cards(deck, Card.CardType.SUPPLY_SHORTAGE, 2)
 	_append_cards(deck, Card.CardType.LIGHTNING, 2)
-	_append_cards(deck, Card.CardType.WEAPON, 3)
+	_append_cards(deck, Card.CardType.CROSSBOW, 2)
+	_append_cards(deck, Card.CardType.QINGGANG_SWORD, 1)
+	_append_cards(deck, Card.CardType.ICE_SWORD, 1)
+	_append_cards(deck, Card.CardType.GREEN_DRAGON_BLADE, 1)
+	_append_cards(deck, Card.CardType.SERPENT_SPEAR, 1)
+	_append_cards(deck, Card.CardType.ROCK_CLEAVING_AXE, 1)
+	_append_cards(deck, Card.CardType.HALBERD, 1)
+	_append_cards(deck, Card.CardType.VERMILION_FAN, 1)
+	_append_cards(deck, Card.CardType.QILIN_BOW, 1)
+	_append_cards(deck, Card.CardType.EIGHT_TRIGRAMS, 2)
+	_append_cards(deck, Card.CardType.VINE_ARMOR, 2)
+	_append_cards(deck, Card.CardType.SILVER_LION, 1)
+	_append_cards(deck, Card.CardType.HORSE_PLUS, 3)
+	_append_cards(deck, Card.CardType.HORSE_MINUS, 3)
 	_assign_suits_and_ranks(deck)
 	deck.shuffle()
 	return deck
