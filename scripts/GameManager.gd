@@ -169,6 +169,11 @@ func other_player(player: BattlePlayer) -> BattlePlayer:
 	return player2 if player == player1 else player1
 
 
+func two_player_action_order(starting_player: BattlePlayer) -> Array[BattlePlayer]:
+	## 双人局的行动顺序固定从当前效果的起点开始，再轮到另一名角色。
+	return [starting_player, other_player(starting_player)]
+
+
 func player_index(player: BattlePlayer) -> int:
 	return players.find(player)
 
@@ -1275,7 +1280,7 @@ func _start_global_trick(card: Card, source: BattlePlayer) -> void:
 		Card.CardType.BARBARIAN_INVASION, Card.CardType.ARROW_BARRAGE:
 			_global_targets = [other_player(source)]
 		Card.CardType.PEACH_GARDEN, Card.CardType.AMAZING_GRACE:
-			_global_targets = [source, other_player(source)]
+			_global_targets = two_player_action_order(source)
 	if card.card_type == Card.CardType.AMAZING_GRACE:
 		revealed_cards.clear()
 		for _index: int in _global_targets.size():
@@ -1283,6 +1288,10 @@ func _start_global_trick(card: Card, source: BattlePlayer) -> void:
 			if revealed != null:
 				revealed_cards.append(revealed)
 		_add_log("【五谷丰登】亮出：%s。" % _card_list_text(revealed_cards))
+		_add_log("【五谷丰登】选择顺序：%s → %s（使用者优先）。" % [
+			_global_targets[0].player_name,
+			_global_targets[1].player_name,
+		])
 	_process_next_global_target()
 
 

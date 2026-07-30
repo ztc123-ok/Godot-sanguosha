@@ -115,7 +115,9 @@ func _rebuild_human_hand(player: BattlePlayer) -> void:
 		for index: int in game.revealed_cards.size():
 			var revealed_view := CardView.new()
 			revealed_view.configure(game.revealed_cards[index], index)
-			revealed_view.card_clicked.connect(_on_revealed_card_clicked)
+			## 亮出的牌双方都可见，但只有当前轮到的人能点击选择。
+			if game._revealed_selecting_player == player:
+				revealed_view.card_clicked.connect(_on_revealed_card_clicked)
 			player_hand.add_child(revealed_view)
 		return
 	for index: int in player.hand.size():

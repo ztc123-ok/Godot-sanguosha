@@ -20,6 +20,7 @@ func _ready() -> void:
 	_test_duel()
 	_test_borrow_sword()
 	_test_amazing_grace()
+	_test_ai_amazing_grace_order()
 	_test_peach_garden()
 	_test_barbarian_invasion()
 	_test_arrow_barrage()
@@ -146,10 +147,27 @@ func _test_amazing_grace() -> void:
 	game.request_card_use(0)
 	_pass_nullification_chain()
 	_expect(game.flow_state == GameManager.FlowState.CHOOSING_REVEALED and game.revealed_cards.size() == 2, "【五谷丰登】亮出两张牌")
+	_expect(game._revealed_selecting_player == p1, "玩家使用五谷丰登时由使用者Player1优先选择")
 	game.request_revealed_card(0)
 	_pass_nullification_chain()
+	_expect(game._revealed_selecting_player == p2, "使用者选完后按行动顺序轮到Player2")
 	game._perform_ai_amazing_grace()
 	_expect(p1.hand.size() == 1 and p2.hand.size() == 1 and game.revealed_cards.is_empty(), "双方各选择并获得一张五谷牌")
+
+
+func _test_ai_amazing_grace_order() -> void:
+	_prepare_play()
+	game.current_player_index = 1
+	_set_hand(p1, [])
+	_set_hand(p2, [AmazingGraceCard.new()])
+	game._use_self_or_global_trick(p2, 0)
+	_pass_nullification_chain()
+	_expect(game._revealed_selecting_player == p2, "反贼使用五谷丰登时仍由使用者Player2优先选择")
+	game._perform_ai_amazing_grace()
+	_pass_nullification_chain()
+	_expect(game._revealed_selecting_player == p1, "反贼选完后按行动顺序轮到玩家Player1")
+	game.request_revealed_card(0)
+	_expect(p1.hand.size() == 1 and p2.hand.size() == 1 and game.revealed_cards.is_empty(), "反贼使用五谷丰登时双方依次各得一牌")
 
 
 func _test_peach_garden() -> void:
