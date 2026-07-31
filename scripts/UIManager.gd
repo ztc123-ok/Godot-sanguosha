@@ -2,6 +2,8 @@ class_name UIManager
 extends CanvasLayer
 ## UI 管理器：监听 GameManager 信号并把所有输入转为规则请求。
 
+@onready var root: Control = $Root
+@onready var action_bar: HBoxContainer = $Root/Margin/Layout/ActionBar
 @onready var turn_label: Label = %TurnLabel
 @onready var phase_label: Label = %PhaseLabel
 @onready var deck_label: Label = %DeckLabel
@@ -43,9 +45,28 @@ extends CanvasLayer
 @onready var log_view: RichTextLabel = %LogView
 
 var game: GameManager
+var general_panel: PanelContainer
+var general_summary: Label
+var start_match_button: Button
+var default_generals_button: Button
+var skill_buttons: Array[Button] = []
+var skill_confirm_button: Button
+var skill_decline_button: Button
+var skill_cards_confirm_button: Button
+var skill_cancel_button: Button
+var reselect_button: Button
+var skill_equipment_buttons: Array[Button] = []
 
 
 func _ready() -> void:
+	_build_skill_action_buttons()
+	_build_general_selection_panel()
+	# 主界面纵向空间固定，状态栏必须保持单行，否则会挤压手牌区和操作栏。
+	opponent_status.autowrap_mode = TextServer.AUTOWRAP_OFF
+	player_status.autowrap_mode = TextServer.AUTOWRAP_OFF
+	opponent_status.clip_text = true
+	player_status.clip_text = true
+	player_status.custom_minimum_size.x = 520.0
 	opponent_zone.card_dropped.connect(_on_card_dropped)
 	player_zone.card_dropped.connect(_on_card_dropped)
 	opponent_zone.target_clicked.connect(_on_target_clicked)
@@ -81,21 +102,38 @@ func refresh() -> void:
 	var human: BattlePlayer = game.player1
 	var ai: BattlePlayer = game.player2
 
-	turn_label.text = "第 %d 回合 · %s" % [game.turn_number, game.current_player().player_name]
-	phase_label.text = game.phase_text()
+	if game.flow_state == GameManager.FlowState.GENERAL_SELECTION:
+		turn_label.text = "选将阶段"
+		phase_label.text = "对局尚未开始"
+	else:
+		turn_label.text = "第 %d 回合 · %s" % [game.turn_number, game.current_player().player_name]
+		phase_label.text = game.phase_text()
 	deck_label.text = "牌堆 %d  ·  弃牌 %d" % [game.draw_pile.size(), game.discard_pile.size()]
 	prompt_label.text = game.prompt_text()
 
-	player_name.text = "%s  ·  %s" % [human.player_name, human.role_name]
-	opponent_name.text = "%s  ·  %s（AI）" % [ai.player_name, ai.role_name]
+	player_name.text = "%s · %s · %s【%s】" % [
+		human.player_name,
+		human.role_name,
+		human.kingdom if not human.kingdom.is_empty() else "未定",
+		human.general_name,
+	]
+	opponent_name.text = "%s · %s · %s【%s】（AI）" % [
+		ai.player_name,
+		ai.role_name,
+		ai.kingdom if not ai.kingdom.is_empty() else "未定",
+		ai.general_name,
+	]
 	_update_hp(player_hp, player_hp_text, human)
 	_update_hp(opponent_hp, opponent_hp_text, ai)
 	player_status.text = _status_text(human)
 	opponent_status.text = _status_text(ai)
+	player_status.tooltip_text = player_status.text
+	opponent_status.tooltip_text = opponent_status.text
 	_rebuild_human_hand(human)
 	_rebuild_opponent_hand(ai)
 	_update_actions(human)
 	_update_target_highlight()
+	_update_general_panel()
 
 
 func _update_hp(bar: ProgressBar, label: Label, player: BattlePlayer) -> void:
@@ -105,7 +143,7 @@ func _update_hp(bar: ProgressBar, label: Label, player: BattlePlayer) -> void:
 		player.hp,
 		player.max_hp,
 		player.hand.size(),
-		player.hand_limit(),
+		game.hand_limit_for(player),
 	]
 
 
@@ -127,6 +165,11 @@ func _rebuild_human_hand(player: BattlePlayer) -> void:
 		if (
 			game.flow_state == GameManager.FlowState.SELECTING_TARGET
 			and index == game.selected_hand_index
+		):
+			view.set_selected(true)
+		if (
+			game.flow_state == GameManager.FlowState.SKILL_SELECT_CARDS
+			and player.hand[index] in game.pending_skill_cards
 		):
 			view.set_selected(true)
 		player_hand.add_child(view)
@@ -165,6 +208,15 @@ func _update_actions(human: BattlePlayer) -> void:
 		serpent_spear_button,
 	]
 	all_buttons.append_array(choice_buttons)
+	all_buttons.append_array(skill_buttons)
+	all_buttons.append_array(skill_equipment_buttons)
+	all_buttons.append_array([
+		skill_confirm_button,
+		skill_decline_button,
+		skill_cards_confirm_button,
+		skill_cancel_button,
+		reselect_button,
+	])
 	for button: Button in all_buttons:
 		button.visible = false
 
@@ -182,7 +234,14 @@ func _update_actions(human: BattlePlayer) -> void:
 	serpent_spear_button.text = "丈八两牌当【杀】"
 
 	var responding_to_slash := (
-		game.flow_state == GameManager.FlowState.RESPONDING_SLASH
+		game.flow_state in [
+			GameManager.FlowState.RESPONDING_SLASH,
+			GameManager.FlowState.MULTI_RESPONSE,
+		]
+		and (
+			game.flow_state != GameManager.FlowState.MULTI_RESPONSE
+			or game._multi_response_origin == GameManager.FlowState.RESPONDING_SLASH
+		)
 		and game.pending_target == human
 	)
 	dodge_button.visible = responding_to_slash
@@ -208,7 +267,14 @@ func _update_actions(human: BattlePlayer) -> void:
 		pass_button.text = "不响应"
 
 	var duel_response := (
-		game.flow_state == GameManager.FlowState.DUEL_RESPONSE
+		game.flow_state in [
+			GameManager.FlowState.DUEL_RESPONSE,
+			GameManager.FlowState.MULTI_RESPONSE,
+		]
+		and (
+			game.flow_state != GameManager.FlowState.MULTI_RESPONSE
+			or game._multi_response_origin == GameManager.FlowState.DUEL_RESPONSE
+		)
 		and game._duel_responder == human
 	)
 	if duel_response:
@@ -246,10 +312,60 @@ func _update_actions(human: BattlePlayer) -> void:
 	wine_button.disabled = human.find_card(Card.CardType.WINE) < 0
 
 	restart_button.visible = game.flow_state == GameManager.FlowState.GAME_OVER
+	reselect_button.visible = game.flow_state == GameManager.FlowState.GAME_OVER
+
+	if game.flow_state == GameManager.FlowState.SKILL_CONFIRM and game.skill_actor == human:
+		skill_confirm_button.visible = true
+		skill_confirm_button.text = "发动【%s】" % game.pending_skill.display_name
+		skill_decline_button.visible = true
+		skill_decline_button.text = "不发动"
+
+	if game.flow_state == GameManager.FlowState.SKILL_SELECT_CARDS and game.skill_actor == human:
+		skill_cancel_button.visible = true
+		skill_cards_confirm_button.visible = (
+			game.pending_skill.activation_mode == Skill.ActivationMode.ACTIVE
+		)
+		skill_cards_confirm_button.disabled = game.pending_skill_cards.is_empty()
+		_update_skill_equipment_buttons(human)
+
+	if game.flow_state == GameManager.FlowState.SKILL_SELECT_TARGET and game.skill_actor == human:
+		skill_cancel_button.visible = true
+
+	if game.flow_state not in [
+		GameManager.FlowState.GENERAL_SELECTION,
+		GameManager.FlowState.GAME_OVER,
+		GameManager.FlowState.SKILL_CONFIRM,
+		GameManager.FlowState.SKILL_SELECT_CARDS,
+		GameManager.FlowState.SKILL_SELECT_TARGET,
+		GameManager.FlowState.SKILL_RESOLVING,
+	]:
+		for index: int in mini(human.skills.size(), skill_buttons.size()):
+			var skill: Skill = human.skills[index]
+			if skill.activation_mode not in [Skill.ActivationMode.ACTIVE, Skill.ActivationMode.VIEW_AS]:
+				continue
+			var button: Button = skill_buttons[index]
+			button.set_meta("skill_id", skill.id)
+			button.visible = game.can_use_skill(human, skill)
+			button.disabled = not game.can_use_skill(human, skill)
+			button.text = "【%s】" % skill.display_name
+			button.tooltip_text = skill.description
 
 
 func _status_text(player: BattlePlayer) -> String:
 	var states: PackedStringArray = []
+	var skill_states: PackedStringArray = []
+	for skill: Skill in player.skills:
+		var state_text := "待触发"
+		if skill.has_tag(Skill.SkillTag.LOCKED):
+			state_text = "生效中"
+		elif skill.usage_scope == Skill.UsageScope.PER_TURN:
+			state_text = "已用" if player.skill_use_count(skill) >= skill.max_uses else "可用"
+		elif skill.activation_mode in [Skill.ActivationMode.ACTIVE, Skill.ActivationMode.VIEW_AS]:
+			state_text = "可用" if game.can_use_skill(player, skill) else "待时机"
+		if skill.id == &"luoyi" and player.luoyi_active:
+			state_text = "本回合生效"
+		skill_states.append("%s(%s)" % [skill.display_name, state_text])
+	states.append("技:%s" % ("无" if skill_states.is_empty() else "/".join(skill_states)))
 	states.append("链:%s" % ("横" if player.chained else "未"))
 	states.append("武:%s" % (player.weapon.display_name if player.weapon != null else "无"))
 	states.append("防:%s" % (player.armor.display_name if player.armor != null else "无"))
@@ -267,7 +383,10 @@ func _status_text(player: BattlePlayer) -> String:
 
 
 func _update_target_highlight() -> void:
-	var selecting := game.flow_state == GameManager.FlowState.SELECTING_TARGET
+	var selecting := game.flow_state in [
+		GameManager.FlowState.SELECTING_TARGET,
+		GameManager.FlowState.SKILL_SELECT_TARGET,
+	]
 	opponent_zone.modulate = Color("fff0a8") if selecting else Color.WHITE
 	player_zone.modulate = Color.WHITE
 
@@ -316,7 +435,7 @@ func _on_give_up() -> void:
 
 func _on_restart() -> void:
 	log_view.clear()
-	game.start_match()
+	game.request_restart_match()
 
 
 func _on_slash_response() -> void:
@@ -347,6 +466,220 @@ func _on_choice(index: int) -> void:
 	game.request_option(index)
 
 
+func _on_skill_pressed(button: Button) -> void:
+	game.request_begin_skill(StringName(button.get_meta("skill_id", "")))
+
+
+func _on_skill_confirm() -> void:
+	game.request_confirm_skill()
+
+
+func _on_skill_decline() -> void:
+	game.request_decline_skill()
+
+
+func _on_skill_cards_confirm() -> void:
+	game.request_confirm_skill_cards()
+
+
+func _on_skill_cancel() -> void:
+	game.request_cancel_skill()
+
+
+func _on_skill_equipment(button: Button) -> void:
+	game.request_skill_select_equipment(int(button.get_meta("equipment_slot", -1)))
+
+
+func _on_reselect() -> void:
+	log_view.clear()
+	game.request_reselect_generals()
+
+
+func _on_general_selected(general_id: StringName) -> void:
+	game.request_select_general(general_id)
+
+
+func _on_default_generals() -> void:
+	game.request_use_default_generals()
+
+
+func _on_start_match() -> void:
+	log_view.clear()
+	game.request_start_match()
+
+
 func _append_log(message: String) -> void:
 	log_view.append_text("%s\n" % message)
 	log_view.scroll_to_line(log_view.get_line_count())
+
+
+func _build_skill_action_buttons() -> void:
+	for index: int in 3:
+		var button := Button.new()
+		button.visible = false
+		button.pressed.connect(_on_skill_pressed.bind(button))
+		action_bar.add_child(button)
+		skill_buttons.append(button)
+
+	skill_confirm_button = Button.new()
+	skill_confirm_button.visible = false
+	skill_confirm_button.pressed.connect(_on_skill_confirm)
+	action_bar.add_child(skill_confirm_button)
+
+	skill_decline_button = Button.new()
+	skill_decline_button.visible = false
+	skill_decline_button.pressed.connect(_on_skill_decline)
+	action_bar.add_child(skill_decline_button)
+
+	skill_cards_confirm_button = Button.new()
+	skill_cards_confirm_button.text = "确认技能代价"
+	skill_cards_confirm_button.visible = false
+	skill_cards_confirm_button.pressed.connect(_on_skill_cards_confirm)
+	action_bar.add_child(skill_cards_confirm_button)
+
+	skill_cancel_button = Button.new()
+	skill_cancel_button.text = "取消技能"
+	skill_cancel_button.visible = false
+	skill_cancel_button.pressed.connect(_on_skill_cancel)
+	action_bar.add_child(skill_cancel_button)
+
+	reselect_button = Button.new()
+	reselect_button.text = "重新选将"
+	reselect_button.visible = false
+	reselect_button.pressed.connect(_on_reselect)
+	action_bar.add_child(reselect_button)
+
+	for _index: int in 4:
+		var equipment_button := Button.new()
+		equipment_button.visible = false
+		equipment_button.pressed.connect(_on_skill_equipment.bind(equipment_button))
+		action_bar.add_child(equipment_button)
+		skill_equipment_buttons.append(equipment_button)
+
+
+func _build_general_selection_panel() -> void:
+	general_panel = PanelContainer.new()
+	general_panel.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	general_panel.offset_left = 54.0
+	general_panel.offset_top = 28.0
+	general_panel.offset_right = -54.0
+	general_panel.offset_bottom = -28.0
+	general_panel.z_index = 100
+	general_panel.mouse_filter = Control.MOUSE_FILTER_STOP
+	root.add_child(general_panel)
+
+	var margin := MarginContainer.new()
+	margin.add_theme_constant_override("margin_left", 24)
+	margin.add_theme_constant_override("margin_top", 18)
+	margin.add_theme_constant_override("margin_right", 24)
+	margin.add_theme_constant_override("margin_bottom", 18)
+	general_panel.add_child(margin)
+
+	var layout := VBoxContainer.new()
+	layout.add_theme_constant_override("separation", 10)
+	margin.add_child(layout)
+
+	var title := Label.new()
+	title.text = "选择主公武将"
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.add_theme_font_size_override("font_size", 28)
+	layout.add_child(title)
+
+	general_summary = Label.new()
+	general_summary.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	general_summary.text = "请选择武将"
+	layout.add_child(general_summary)
+
+	var grid := GridContainer.new()
+	grid.columns = 3
+	grid.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	grid.add_theme_constant_override("h_separation", 10)
+	grid.add_theme_constant_override("v_separation", 8)
+	layout.add_child(grid)
+
+	for definition: GeneralDefinition in GeneralFactory.all_generals():
+		var skill: Skill = SkillFactory.create_skill(StringName(definition.skill_ids[0]))
+		var card_box := VBoxContainer.new()
+		card_box.custom_minimum_size = Vector2(0.0, 118.0)
+		card_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		card_box.add_theme_constant_override("separation", 3)
+		grid.add_child(card_box)
+		var button := Button.new()
+		button.custom_minimum_size = Vector2(0.0, 54.0)
+		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		button.text = "%s · %s · %d体力\n【%s】" % [
+			definition.display_name,
+			definition.kingdom,
+			definition.max_hp,
+			skill.display_name,
+		]
+		button.tooltip_text = skill.description
+		button.pressed.connect(_on_general_selected.bind(definition.id))
+		card_box.add_child(button)
+		var description := Label.new()
+		description.text = skill.description
+		description.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		description.add_theme_font_size_override("font_size", 13)
+		description.size_flags_vertical = Control.SIZE_EXPAND_FILL
+		card_box.add_child(description)
+
+	var footer := HBoxContainer.new()
+	footer.alignment = BoxContainer.ALIGNMENT_CENTER
+	footer.add_theme_constant_override("separation", 16)
+	layout.add_child(footer)
+
+	default_generals_button = Button.new()
+	default_generals_button.text = "载入默认：曹操 VS 吕布"
+	default_generals_button.pressed.connect(_on_default_generals)
+	footer.add_child(default_generals_button)
+
+	start_match_button = Button.new()
+	start_match_button.text = "开始对局"
+	start_match_button.pressed.connect(_on_start_match)
+	footer.add_child(start_match_button)
+
+
+func _update_general_panel() -> void:
+	if general_panel == null:
+		return
+	general_panel.visible = game.flow_state == GameManager.FlowState.GENERAL_SELECTION
+	if not general_panel.visible:
+		return
+	var ready: bool = game.player1.general_id != &"" and game.player2.general_id != &""
+	start_match_button.disabled = not ready
+	if ready:
+		general_summary.text = "主公：%s（%s）  VS  反贼：%s（%s）" % [
+			game.player1.general_name,
+			game.player1.kingdom,
+			game.player2.general_name,
+			game.player2.kingdom,
+		]
+	else:
+		general_summary.text = "请选择一名武将；反贼会从剩余武将中随机选择"
+
+
+func _update_skill_equipment_buttons(player: BattlePlayer) -> void:
+	var equipment: Array[Card] = player.all_equipment()
+	var visible_index: int = 0
+	for card: Card in equipment:
+		if visible_index >= skill_equipment_buttons.size():
+			break
+		if (
+			game.pending_skill.activation_mode == Skill.ActivationMode.VIEW_AS
+			and not game.pending_skill.can_view_as(
+				card,
+				game._skill_effective_card_type,
+				game,
+				player
+			)
+		):
+			continue
+		var slot: int = game._equipment_slot_for_card(player, card)
+		var button: Button = skill_equipment_buttons[visible_index]
+		button.visible = true
+		button.text = "%s装备【%s】" % [
+			"取消" if card in game.pending_skill_cards else "选择",
+			card.display_name,
+		]
+		button.set_meta("equipment_slot", slot)
+		visible_index += 1

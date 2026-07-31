@@ -6,17 +6,27 @@ const EquipmentScript = preload("res://scripts/cards/equipment/Equipment.gd")
 
 signal hp_changed(current_hp: int, maximum_hp: int)
 signal hand_changed
+signal general_changed
 
 @export var player_name: String = "Player"
 @export var role_name: String = "身份"
 @export var is_ai: bool = false
 @export_range(1, 20, 1) var max_hp: int = 4
 
+## 身份（role_name）与武将资料严格分离。
+var general_id: StringName = &""
+var general_name: String = "未选将"
+var kingdom: String = ""
+var skills: Array[Skill] = []
+var turn_skill_usage: Dictionary = {}
+var match_skill_usage: Dictionary = {}
+
 var hp: int = 4
 var hand: Array[Card] = []
 var slash_used_this_turn: bool = false
 var wine_active: bool = false
 var chained: bool = false
+var luoyi_active: bool = false
 
 ## 四个互相独立的装备区；同一装备区始终至多一张牌。
 var weapon: Card = null
@@ -41,6 +51,7 @@ func reset_for_match() -> void:
 	indulgence_card = null
 	supply_shortage_card = null
 	lightning_card = null
+	match_skill_usage.clear()
 	reset_turn_flags()
 	hp_changed.emit(hp, max_hp)
 	hand_changed.emit()
@@ -49,6 +60,74 @@ func reset_for_match() -> void:
 func reset_turn_flags() -> void:
 	slash_used_this_turn = false
 	wine_active = false
+	luoyi_active = false
+	turn_skill_usage.clear()
+
+
+func assign_general(definition: GeneralDefinition) -> void:
+	if definition == null:
+		return
+	general_id = definition.id
+	general_name = definition.display_name
+	kingdom = definition.kingdom
+	max_hp = definition.max_hp
+	hp = max_hp
+	skills.clear()
+	for skill_id: String in definition.skill_ids:
+		var skill: Skill = SkillFactory.create_skill(StringName(skill_id))
+		if skill != null:
+			skills.append(skill)
+	turn_skill_usage.clear()
+	match_skill_usage.clear()
+	luoyi_active = false
+	general_changed.emit()
+	hp_changed.emit(hp, max_hp)
+
+
+func clear_general() -> void:
+	general_id = &""
+	general_name = "未选将"
+	kingdom = ""
+	skills.clear()
+	turn_skill_usage.clear()
+	match_skill_usage.clear()
+	general_changed.emit()
+
+
+func has_skill(skill_id: StringName) -> bool:
+	return get_skill(skill_id) != null
+
+
+func get_skill(skill_id: StringName) -> Skill:
+	for skill: Skill in skills:
+		if skill.id == skill_id:
+			return skill
+	return null
+
+
+func skill_use_count(skill: Skill) -> int:
+	if skill == null:
+		return 0
+	if skill.usage_scope == Skill.UsageScope.PER_TURN:
+		return int(turn_skill_usage.get(skill.id, 0))
+	return int(match_skill_usage.get(skill.id, 0))
+
+
+func can_pay_skill_usage(skill: Skill) -> bool:
+	if skill == null:
+		return false
+	if skill.usage_scope == Skill.UsageScope.UNLIMITED:
+		return true
+	return skill_use_count(skill) < skill.max_uses
+
+
+func record_skill_use(skill: Skill) -> void:
+	if skill == null:
+		return
+	if skill.usage_scope == Skill.UsageScope.PER_TURN:
+		turn_skill_usage[skill.id] = skill_use_count(skill) + 1
+	else:
+		match_skill_usage[skill.id] = skill_use_count(skill) + 1
 
 
 func add_card(card: Card) -> void:
