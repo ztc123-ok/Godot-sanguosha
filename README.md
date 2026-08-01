@@ -5,7 +5,7 @@ Godot 4.6 正式版、纯 GDScript 4.x。玩家控制主公 Player1，基础 AI 
 ## 运行
 
 1. 使用 Godot 4.6 打开本目录的 `project.godot`。
-2. 按 F6/F5 运行主场景，在选将面板选择武将后点击“开始对局”。
+2. 按 F6/F5 运行主场景，从序章地图进入第一战，在选将面板选择武将后点击“开始对局”。
 3. 无需第三方插件、字体或图片素材。
 
 ## 操作
@@ -79,8 +79,10 @@ Godot 4.6 正式版、纯 GDScript 4.x。玩家控制主公 Player1，基础 AI 
 ## 结构
 
 ```text
+scenes/MapScene.tscn
 scenes/Main.tscn
 scripts/
+├── MapScene.gd / PrologueState.gd
 ├── Main.gd
 ├── GameManager.gd
 ├── Player.gd
@@ -121,6 +123,7 @@ scripts/
 ```powershell
 Godot_v4.6-stable_win64_console.exe --headless --path . res://tests/RuleSmokeTest.tscn
 Godot_v4.6-stable_win64_console.exe --headless --path . res://tests/SkillSmokeTest.tscn
+Godot_v4.6-stable_win64_console.exe --headless --path . res://tests/PrologueSmokeTest.tscn
 ```
 
-`RuleSmokeTest` 覆盖基础牌、15 类锦囊、四装备槽、距离、装备技能、无懈链、属性伤害、判定与濒死。`SkillSmokeTest` 覆盖选将、九名武将、技能分类、处理区、虚拟牌、摸牌/伤害上下文、无双多响应和 AI 技能流程。
+`RuleSmokeTest` 覆盖基础牌、15 类锦囊、四装备槽、距离、装备技能、无懈链、属性伤害、判定与濒死。`SkillSmokeTest` 覆盖选将、九名武将、技能分类、处理区、虚拟牌、摸牌/伤害上下文、无双多响应和 AI 技能流程。`PrologueSmokeTest` 覆盖序章节点的线性解锁与村落入口。

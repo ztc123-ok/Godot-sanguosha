@@ -6,8 +6,12 @@ config_version=5
 [application]
 
 config/name="三国杀·二人完整卡牌版"
-run/main_scene="res://scenes/Main.tscn"
+run/main_scene="res://scenes/MapScene.tscn"
 config/features=PackedStringArray("4.6", "GL Compatibility")
+
+[autoload]
+
+PrologueState="*res://scripts/PrologueState.gd"
 
 [display]
 
