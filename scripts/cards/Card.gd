@@ -114,6 +114,19 @@ func is_red() -> bool:
 	return suit in [Suit.HEART, Suit.DIAMOND]
 
 
+func is_black() -> bool:
+	return suit in [Suit.SPADE, Suit.CLUB]
+
+
+static func suit_name(value: Suit) -> String:
+	match value:
+		Suit.SPADE: return "黑桃"
+		Suit.HEART: return "红桃"
+		Suit.CLUB: return "梅花"
+		Suit.DIAMOND: return "方块"
+	return "无花色"
+
+
 func suit_text() -> String:
 	match suit:
 		Suit.SPADE:

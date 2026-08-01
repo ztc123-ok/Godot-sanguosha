@@ -4,6 +4,8 @@ extends Node
 ## 所有主动牌、响应牌、锦囊、判定、伤害和濒死均经过本状态机结算。
 
 const EquipmentScript = preload("res://scripts/cards/equipment/Equipment.gd")
+const JudgementContextScript = preload("res://scripts/skills/JudgementContext.gd")
+const TriggerEntryScript = preload("res://scripts/skills/TriggerEntry.gd")
 
 signal state_changed
 signal log_added(message: String)
@@ -39,6 +41,10 @@ enum FlowState {
 	SKILL_SELECT_CARDS,
 	SKILL_SELECT_TARGET,
 	SKILL_RESOLVING,
+	JUDGEMENT_REPLACE,
+	DECK_REORDER,
+	SKILL_ASSIGN_CARDS,
+	CHOOSING_SUIT,
 	GAME_OVER,
 }
 
@@ -93,6 +99,25 @@ var _skill_return_state: FlowState = FlowState.IDLE
 var _skill_effective_card_type: Card.CardType = Card.CardType.SLASH
 var _skill_use_context: SkillUseContext
 var _draw_context: DrawContext
+var judgement_context: JudgementContextScript
+var private_cards: Array[Card] = []
+var private_card_owner: BattlePlayer
+var private_card_assignments: Array[int] = []
+var deck_reorder_top: Array[Card] = []
+var deck_reorder_bottom: Array[Card] = []
+var _trigger_queue: Array[TriggerEntryScript] = []
+var _trigger_queue_continue: Callable = Callable()
+var _trigger_stack: Array[Dictionary] = []
+var _judgement_result_handler: Callable = Callable()
+var _judgement_continue: Callable = Callable()
+var _judgement_guicai_owners: Array[BattlePlayer] = []
+var _judgement_guicai_index: int = 0
+var _judged_delayed_card: Card
+var _async_skill_continue: Callable = Callable()
+var _fanjian_selected_suit: Card.Suit = Card.Suit.SPADE
+var _fanjian_source: BattlePlayer
+var _fanjian_target: BattlePlayer
+var _luoshen_final_continue: Callable = Callable()
 
 ## 当前主动牌与【杀】各自的使用上下文。
 var _active_use_context: SkillUseContext
@@ -330,6 +355,24 @@ func _reset_transient_contexts() -> void:
 	_judgement_queue.clear()
 	_judgement_index = 0
 	_judging_card = null
+	judgement_context = null
+	private_cards.clear()
+	private_card_owner = null
+	private_card_assignments.clear()
+	deck_reorder_top.clear()
+	deck_reorder_bottom.clear()
+	_trigger_queue.clear()
+	_trigger_queue_continue = Callable()
+	_trigger_stack.clear()
+	_judgement_result_handler = Callable()
+	_judgement_continue = Callable()
+	_judgement_guicai_owners.clear()
+	_judgement_guicai_index = 0
+	_judged_delayed_card = null
+	_async_skill_continue = Callable()
+	_fanjian_source = null
+	_fanjian_target = null
+	_luoshen_final_continue = Callable()
 	_damage_queue.clear()
 	_damage_after = Callable()
 	_dying_after = Callable()
@@ -390,7 +433,15 @@ func prompt_text() -> String:
 	if flow_state == FlowState.SKILL_SELECT_TARGET:
 		return "%s 发动【%s】：请选择合法目标" % [skill_actor.player_name, pending_skill.display_name]
 	if flow_state == FlowState.SKILL_RESOLVING:
-		return "正在结算【%s】……" % pending_skill.display_name
+		return "正在结算技能……" if pending_skill == null else "正在结算【%s】……" % pending_skill.display_name
+	if flow_state == FlowState.JUDGEMENT_REPLACE:
+		return "%s：当前判定牌%s；点击一张手牌发动【鬼才】，或放弃改判。" % [skill_actor.player_name, judgement_context.effective_card.identity_text()]
+	if flow_state == FlowState.SKILL_ASSIGN_CARDS:
+		return "%s 正在分配【遗计】的私有牌；逐张指定主公或反贼后确认。" % private_card_owner.player_name
+	if flow_state == FlowState.DECK_REORDER:
+		return "%s 正在【观星】：按点击顺序选择置顶牌，未选牌按顺序置底。" % private_card_owner.player_name
+	if flow_state == FlowState.CHOOSING_SUIT:
+		return "%s 正在为【反间】选择花色；随机牌尚未公开。" % choice_owner.player_name
 	if flow_state == FlowState.SELECTING_TARGET:
 		return "已选择【%s】——点击或拖到合法角色区域" % _selected_card_name()
 	if flow_state == FlowState.RESPONDING_SLASH:
@@ -529,7 +580,17 @@ func can_slash_target(source: BattlePlayer, target: BattlePlayer) -> bool:
 		and target != null
 		and source != target
 		and distance_between(source, target) <= attack_range(source)
+		and _skills_allow_target(source, target, Card.CardType.SLASH)
 	)
+
+
+func _skills_allow_target(source: BattlePlayer, target: BattlePlayer, effective_type: Card.CardType) -> bool:
+	if target == null:
+		return false
+	for skill: Skill in target.skills:
+		if skill.activation_mode == Skill.ActivationMode.MODIFIER and not skill.can_be_targeted_by(effective_type, source, self, target):
+			return false
+	return true
 
 
 func can_use_slash_in_play(user: Node) -> bool:
@@ -647,6 +708,9 @@ func request_card_use(hand_index: int) -> void:
 	var card: Card = player1.hand[hand_index]
 
 	match flow_state:
+		FlowState.JUDGEMENT_REPLACE:
+			request_judgement_replace(hand_index)
+			return
 		FlowState.SKILL_SELECT_CARDS:
 			request_skill_toggle_hand_card(hand_index)
 			return
@@ -765,6 +829,10 @@ func request_begin_skill(skill_id: StringName) -> void:
 		FlowState.SKILL_SELECT_CARDS,
 		FlowState.SKILL_SELECT_TARGET,
 		FlowState.SKILL_RESOLVING,
+		FlowState.JUDGEMENT_REPLACE,
+		FlowState.DECK_REORDER,
+		FlowState.SKILL_ASSIGN_CARDS,
+		FlowState.CHOOSING_SUIT,
 	]:
 		return
 	var actor: BattlePlayer = current_player() if is_play_phase_for(current_player()) else _current_response_player()
@@ -784,6 +852,8 @@ func request_skill_toggle_hand_card(hand_index: int) -> void:
 		return
 	var card: Card = skill_actor.hand[hand_index]
 	if pending_skill.activation_mode == Skill.ActivationMode.ACTIVE:
+		if not pending_skill.allows_hand_cost():
+			return
 		if card in pending_skill_cards:
 			pending_skill_cards.erase(card)
 			_add_log("%s 取消选择%s作为【%s】代价。" % [
@@ -817,13 +887,16 @@ func request_skill_select_equipment(slot: int) -> void:
 	if card == null:
 		return
 	if pending_skill.activation_mode == Skill.ActivationMode.ACTIVE:
+		if not pending_skill.allows_equipment_cost():
+			_reject("该技能不能选择装备牌作为代价。")
+			return
 		if card in pending_skill_cards:
 			pending_skill_cards.erase(card)
 		else:
 			pending_skill_cards.append(card)
 		_emit_state()
 		return
-	if not pending_skill.can_view_as(card, _skill_effective_card_type, self, skill_actor):
+	if not pending_skill.allows_view_as_equipment() or not pending_skill.can_view_as(card, _skill_effective_card_type, self, skill_actor):
 		_reject("该装备不能作为【%s】的代价。" % pending_skill.display_name)
 		return
 	pending_skill_cards = [card]
@@ -907,6 +980,9 @@ func _begin_active_or_view_as_skill(actor: BattlePlayer, skill: Skill) -> void:
 	pending_skill_targets.clear()
 	_skill_return_state = flow_state
 	if skill.activation_mode == Skill.ActivationMode.ACTIVE:
+		if not skill.requires_card_cost():
+			_resolve_active_skill()
+			return
 		flow_state = FlowState.SKILL_SELECT_CARDS
 		_add_log("%s 准备发动主动技【%s】，请选择代价牌。" % [actor.player_name, skill.display_name])
 		_emit_state()
@@ -942,9 +1018,10 @@ func _view_as_candidates(
 	for card: Card in player.hand:
 		if skill.can_view_as(card, effective_type, self, player):
 			result.append(card)
-	for card: Card in player.all_equipment():
-		if skill.can_view_as(card, effective_type, self, player):
-			result.append(card)
+	if skill.allows_view_as_equipment():
+		for card: Card in player.all_equipment():
+			if skill.can_view_as(card, effective_type, self, player):
+				result.append(card)
 	return result
 
 
@@ -1048,6 +1125,23 @@ func _resolve_active_skill() -> void:
 	if actor == null or skill == null or not skill.validate_cost(cards, self, actor):
 		return
 	flow_state = FlowState.SKILL_RESOLVING
+	var preview_context := SkillUseContext.new(actor, cards, Card.CardType.SLASH, skill, null, true, "主动技能预览")
+	var preview_request: Dictionary = skill.build_resolution_request(preview_context, self, actor)
+	var preview_action: StringName = preview_request.get("action", &"")
+	if preview_action == &"rende":
+		_resolve_rende(actor, skill, cards)
+		return
+	if preview_action == &"kurou":
+		actor.record_skill_use(skill)
+		_add_log("%s 发动【苦肉】，失去1点体力。" % actor.player_name)
+		_clear_skill_context()
+		lose_hp(actor, 1, Callable(self, "_finish_kurou").bind(actor))
+		return
+	if preview_action == &"fanjian":
+		actor.record_skill_use(skill)
+		_clear_skill_context()
+		_begin_fanjian(actor)
+		return
 	var paid: Array[Card] = []
 	for card: Card in cards:
 		var hand_index: int = actor.hand.find(card)
@@ -1071,8 +1165,7 @@ func _resolve_active_skill() -> void:
 	actor.record_skill_use(skill)
 	_add_log("%s 发动【%s】，弃置%s。" % [actor.player_name, skill.display_name, _card_list_text(paid)])
 	_clear_skill_context()
-	_apply_skill_resolution(request, use_context, actor, skill)
-	_return_to_play()
+	_apply_skill_resolution(request, use_context, actor, skill, Callable(self, "_return_to_play"))
 
 
 func _offer_triggered_skill(
@@ -1115,7 +1208,9 @@ func _resolve_pending_trigger(activate: bool) -> void:
 		owner.record_skill_use(skill)
 		_add_log("%s 发动【%s】。" % [owner.player_name, skill.display_name])
 		var request: Dictionary = skill.build_resolution_request(event_context, self, owner)
-		_apply_skill_resolution(request, event_context, owner, skill)
+		_clear_skill_context()
+		_apply_skill_resolution(request, event_context, owner, skill, continuation)
+		return
 	else:
 		_add_log("%s 放弃发动【%s】。" % [owner.player_name, skill.display_name])
 	_clear_skill_context()
@@ -1126,9 +1221,11 @@ func _apply_skill_resolution(
 	request: Dictionary,
 	event_context: RefCounted,
 	owner: BattlePlayer,
-	skill: Skill
+	skill: Skill,
+	continuation: Callable = Callable()
 ) -> void:
 	var action: StringName = request.get("action", &"")
+	var asynchronous: bool = false
 	match action:
 		&"gain_processing_card":
 			var card: Card = request.get("card")
@@ -1162,6 +1259,36 @@ func _apply_skill_resolution(
 			var count: int = int(request.get("count", 0))
 			draw_cards(owner, count)
 			_add_log("%s 因【%s】摸 %d 张牌。" % [owner.player_name, skill.display_name, count])
+		&"yingzi":
+			var draw := event_context as DrawContext
+			if draw != null:
+				draw.final_count += 1
+				_add_log("【英姿】令 %s 本次摸牌数+1，最终摸%d张。" % [owner.player_name, draw.final_count])
+		&"tiandu":
+			var judgement := event_context as JudgementContextScript
+			if judgement != null and judgement.effective_card != null and not judgement.is_claimed():
+				judgement.claim(owner)
+				_add_log("%s 通过【天妒】获得最终判定牌%s。" % [owner.player_name, judgement.effective_card.identity_text()])
+		&"fankui":
+			asynchronous = true
+			_begin_fankui(owner, event_context as DamageContext, continuation)
+		&"ganglie":
+			asynchronous = true
+			_begin_ganglie(owner, event_context as DamageContext, continuation)
+		&"yiji":
+			asynchronous = true
+			_begin_yiji(owner, continuation)
+		&"luoshen":
+			asynchronous = true
+			_begin_luoshen(owner, continuation)
+		&"guanxing":
+			asynchronous = true
+			_begin_guanxing(owner, continuation)
+		&"keji":
+			owner.skip_discard_this_turn = true
+			_add_log("%s 发动【克己】，跳过本回合弃牌阶段。" % owner.player_name)
+	if not asynchronous:
+		_call_safe(continuation)
 
 
 func _find_triggered_skill(
@@ -1178,6 +1305,452 @@ func _find_triggered_skill(
 		):
 			return skill
 	return null
+
+
+func _resolve_rende(actor: BattlePlayer, skill: Skill, cards: Array[Card]) -> void:
+	var target: BattlePlayer = other_player(actor)
+	var moved: Array[Card] = []
+	for card: Card in cards:
+		var index: int = actor.hand.find(card)
+		if index >= 0:
+			var given: Card = actor.remove_card_at(index)
+			target.add_card(given)
+			moved.append(given)
+	if moved.is_empty():
+		_add_log("【仁德】确认时已无合法手牌，未移动任何牌。")
+		_clear_skill_context()
+		_return_to_play()
+		return
+	actor.record_skill_use(skill)
+	actor.rende_given_this_phase += moved.size()
+	_add_log("%s 发动【仁德】，将%d张手牌交给%s；本阶段累计%d张。" % [actor.player_name, moved.size(), target.player_name, actor.rende_given_this_phase])
+	if actor.rende_given_this_phase >= 2 and not actor.rende_recovery_consumed:
+		actor.rende_recovery_consumed = true
+		var before: int = actor.hp
+		actor.recover(1)
+		_add_log("【仁德】首次累计达到2张，回复机会已消耗；体力%d→%d。" % [before, actor.hp])
+	_clear_skill_context()
+	_return_to_play()
+
+
+func _finish_kurou(actor: BattlePlayer) -> void:
+	if flow_state == FlowState.GAME_OVER or actor.hp <= 0:
+		return
+	draw_cards(actor, 2)
+	_add_log("%s 完成【苦肉】结算，摸两张牌。" % actor.player_name)
+	_return_to_play()
+
+
+func lose_hp(player: BattlePlayer, amount: int, continuation: Callable = Callable()) -> void:
+	if player == null or amount <= 0 or flow_state == FlowState.GAME_OVER:
+		_call_safe(continuation)
+		return
+	player.lose_hp(amount)
+	_add_log("%s 失去%d点体力，当前体力%d/%d；此过程不属于伤害。" % [player.player_name, amount, player.hp, player.max_hp])
+	_emit_state()
+	if player.is_dying():
+		_enter_dying(player, continuation)
+	else:
+		_call_safe(continuation)
+
+
+func _begin_fankui(owner: BattlePlayer, context: DamageContext, continuation: Callable) -> void:
+	if context == null or context.source == null or not context.source.has_any_card_in_play_area():
+		_add_log("【反馈】结算时伤害来源已无牌，安全跳过。")
+		_call_safe(continuation)
+		return
+	var source: BattlePlayer = context.source
+	var codes: Array[String] = []
+	var labels: Array[String] = []
+	if not source.hand.is_empty():
+		codes.append("hand")
+		labels.append("暗置手牌区（随机）")
+	for entry: Dictionary in _equipment_choice_entries(source):
+		codes.append("equip:%s" % entry.code)
+		labels.append("%s：%s" % [entry.slot_name, (entry.card as Card).identity_text()])
+	for delayed: Card in source.delayed_tricks_in_judgement_order():
+		codes.append("delayed:%d" % int(delayed.card_type))
+		labels.append("判定区：%s" % delayed.identity_text())
+	if codes.is_empty():
+		_call_safe(continuation)
+		return
+	if owner.is_ai:
+		_resolve_fankui_choice(0, owner, source, codes, continuation)
+		return
+	choice_owner = owner
+	choice_labels = labels
+	_zone_choice_codes = codes
+	_choice_handler = Callable(self, "_resolve_fankui_choice").bind(owner, source, codes, continuation)
+	flow_state = FlowState.CHOOSING_OPTION
+	_add_log("%s 发动【反馈】，请选择伤害来源的一张牌。" % owner.player_name)
+	_emit_state()
+
+
+func _resolve_fankui_choice(index: int, owner: BattlePlayer, source: BattlePlayer, codes: Array[String], continuation: Callable) -> void:
+	if index < 0 or index >= codes.size() or not source.has_any_card_in_play_area():
+		_call_safe(continuation)
+		return
+	var code: String = codes[index]
+	var gained: Card
+	if code == "hand" and not source.hand.is_empty():
+		gained = source.remove_card_at(randi_range(0, source.hand.size() - 1))
+	elif code.begins_with("equip:"):
+		var slot: int = _slot_from_code(code.trim_prefix("equip:"))
+		gained = source.remove_equipment(slot)
+		if gained != null:
+			_lose_equipment(source, gained, "被【反馈】获得", true)
+			_remove_processing_card(gained)
+	elif code.begins_with("delayed:"):
+		var delayed_type: Card.CardType = int(code.trim_prefix("delayed:"))
+		gained = source.remove_delayed_trick(delayed_type)
+	if gained != null:
+		owner.add_card(gained)
+		_add_log("%s 通过【反馈】从%s获得一张%s。" % [owner.player_name, source.player_name, "暗置手牌" if code == "hand" else gained.identity_text()])
+	else:
+		_add_log("【反馈】所选牌已离开原区域，未复制牌。")
+	_call_safe(continuation)
+
+
+func _begin_ganglie(owner: BattlePlayer, context: DamageContext, continuation: Callable) -> void:
+	if context == null or context.source == null or context.source.hp <= 0:
+		_call_safe(continuation)
+		return
+	_start_judgement(&"ganglie", owner, Callable(self, "_evaluate_ganglie"), Callable(self, "_after_ganglie").bind(owner, context.source, continuation))
+
+
+func _evaluate_ganglie(context: JudgementContextScript) -> void:
+	context.result_data["punish"] = context.effective_card.suit != Card.Suit.HEART
+	_add_log("【刚烈】最终判定为%s：%s。" % [context.effective_card.identity_text(), "非红桃，伤害来源须受惩罚" if bool(context.result_data.get("punish", false)) else "红桃，无后续效果"])
+
+
+func _after_ganglie(context: JudgementContextScript, owner: BattlePlayer, source: BattlePlayer, continuation: Callable) -> void:
+	if not bool(context.result_data.get("punish", false)) or source == null or source.hp <= 0:
+		_call_safe(continuation)
+		return
+	if source.is_ai:
+		_resolve_ganglie_choice(0 if source.hand.size() >= 2 and source.hp <= 1 else 1, owner, source, continuation)
+		return
+	choice_owner = source
+	choice_labels.clear()
+	if source.hand.size() >= 2:
+		choice_labels.append("弃置两张手牌")
+	choice_labels.append("受到1点普通伤害")
+	_choice_handler = Callable(self, "_resolve_ganglie_human_choice").bind(owner, source, continuation)
+	flow_state = FlowState.CHOOSING_OPTION
+	_add_log("【刚烈】：%s 请选择弃置两张手牌或受到1点伤害。" % source.player_name)
+	_emit_state()
+
+
+func _resolve_ganglie_human_choice(index: int, owner: BattlePlayer, source: BattlePlayer, continuation: Callable) -> void:
+	var damage_choice: bool = source.hand.size() < 2 or index == 1
+	_resolve_ganglie_choice(1 if damage_choice else 0, owner, source, continuation)
+
+
+func _resolve_ganglie_choice(choice: int, owner: BattlePlayer, source: BattlePlayer, continuation: Callable) -> void:
+	if choice == 0 and source.hand.size() >= 2:
+		var discarded: Array[Card] = []
+		for _i: int in 2:
+			var card: Card = source.remove_card_at(source.hand.size() - 1)
+			discard_pile.append(card)
+			discarded.append(card)
+		_add_log("%s 因【刚烈】弃置两张手牌：%s。" % [source.player_name, _card_list_text(discarded)])
+		_call_safe(continuation)
+		return
+	var remaining: Array[DamageContext] = _damage_queue.duplicate()
+	var outer_after: Callable = _damage_after
+	_start_damage(owner, source, 1, DamageNature.NORMAL, Callable(self, "_finish_nested_ganglie_damage").bind(remaining, outer_after, continuation), null, null, "【刚烈】")
+
+
+func _finish_nested_ganglie_damage(remaining: Array[DamageContext], outer_after: Callable, continuation: Callable) -> void:
+	_damage_queue = remaining
+	_damage_after = outer_after
+	_call_safe(continuation)
+
+
+func _begin_yiji(owner: BattlePlayer, continuation: Callable) -> void:
+	private_cards.clear()
+	for _i: int in 2:
+		var card: Card = _draw_one_from_pile()
+		if card != null:
+			private_cards.append(card)
+	if private_cards.is_empty():
+		_add_log("【遗计】没有可分配的牌，安全结束。")
+		_call_safe(continuation)
+		return
+	private_card_owner = owner
+	private_card_assignments.resize(private_cards.size())
+	private_card_assignments.fill(-1)
+	_async_skill_continue = continuation
+	flow_state = FlowState.SKILL_ASSIGN_CARDS
+	_add_log("%s 发动【遗计】，观看牌堆顶%d张牌并逐张分配。" % [owner.player_name, private_cards.size()])
+	_emit_state()
+	if owner.is_ai:
+		for index: int in private_card_assignments.size(): private_card_assignments[index] = player_index(owner)
+		_schedule("_perform_ai_confirm_private_cards", 0.2)
+
+
+func request_assign_private_card(card_index: int, target_index: int) -> void:
+	if flow_state != FlowState.SKILL_ASSIGN_CARDS or private_card_owner == null or private_card_owner.is_ai:
+		return
+	if card_index < 0 or card_index >= private_cards.size() or target_index < 0 or target_index >= players.size():
+		return
+	private_card_assignments[card_index] = target_index
+	_add_log("【遗计】第%d张临时牌已指定交给%s。" % [card_index + 1, players[target_index].player_name])
+	_emit_state()
+
+
+func request_confirm_card_assignment() -> void:
+	if flow_state != FlowState.SKILL_ASSIGN_CARDS or private_card_owner == null or private_card_owner.is_ai:
+		return
+	if -1 in private_card_assignments:
+		_reject("请先为每张【遗计】牌指定获得者。")
+		return
+	_finish_private_card_assignment()
+
+
+func request_cancel_card_assignment() -> void:
+	if flow_state != FlowState.SKILL_ASSIGN_CARDS or private_card_owner == null or private_card_owner.is_ai:
+		return
+	for index: int in private_card_assignments.size():
+		private_card_assignments[index] = player_index(private_card_owner)
+	_add_log("取消【遗计】分配调整：临时牌全部交给技能拥有者，保证不丢失。")
+	_finish_private_card_assignment()
+
+
+func _perform_ai_confirm_private_cards() -> void:
+	if flow_state == FlowState.SKILL_ASSIGN_CARDS and private_card_owner != null and private_card_owner.is_ai:
+		_finish_private_card_assignment()
+
+
+func _finish_private_card_assignment() -> void:
+	var cards: Array[Card] = private_cards.duplicate()
+	var assignments: Array[int] = private_card_assignments.duplicate()
+	var continuation: Callable = _async_skill_continue
+	private_cards.clear()
+	private_card_assignments.clear()
+	private_card_owner = null
+	_async_skill_continue = Callable()
+	for index: int in cards.size():
+		var target_index: int = assignments[index] if index < assignments.size() and assignments[index] >= 0 else 0
+		players[target_index].add_card(cards[index])
+		_add_log("【遗计】第%d张牌交给%s。" % [index + 1, players[target_index].player_name])
+	_call_safe(continuation)
+
+
+func _begin_guanxing(owner: BattlePlayer, continuation: Callable) -> void:
+	private_cards.clear()
+	for _i: int in 2:
+		var card: Card = _draw_one_from_pile()
+		if card != null: private_cards.append(card)
+	if private_cards.is_empty():
+		_call_safe(continuation)
+		return
+	private_card_owner = owner
+	deck_reorder_top = private_cards.duplicate()
+	deck_reorder_bottom.clear()
+	_async_skill_continue = continuation
+	flow_state = FlowState.DECK_REORDER
+	_add_log("%s 发动【观星】，观看牌堆顶%d张牌并调整顺序。" % [owner.player_name, private_cards.size()])
+	_emit_state()
+	if owner.is_ai:
+		deck_reorder_top.sort_custom(func(a: Card, b: Card) -> bool: return _ai_card_value(a) > _ai_card_value(b))
+		_schedule("_perform_ai_confirm_deck_reorder", 0.2)
+
+
+func request_confirm_deck_reorder(top_indices: Array[int], bottom_indices: Array[int] = []) -> void:
+	if flow_state != FlowState.DECK_REORDER or private_card_owner == null or private_card_owner.is_ai:
+		return
+	var seen: Dictionary = {}
+	var top: Array[Card] = []
+	for index: int in top_indices:
+		if index < 0 or index >= private_cards.size() or seen.has(index):
+			_reject("【观星】置顶索引无效或重复。")
+			return
+		seen[index] = true
+		top.append(private_cards[index])
+	var bottom: Array[Card] = []
+	if bottom_indices.is_empty():
+		for index: int in private_cards.size():
+			if not seen.has(index): bottom.append(private_cards[index])
+	else:
+		for index: int in bottom_indices:
+			if index < 0 or index >= private_cards.size() or seen.has(index):
+				_reject("【观星】置底索引无效、重复或与置顶重叠。")
+				return
+			seen[index] = true
+			bottom.append(private_cards[index])
+		if seen.size() != private_cards.size():
+			_reject("【观星】确认时必须为每张牌指定唯一去向。")
+			return
+	deck_reorder_top = top
+	deck_reorder_bottom = bottom
+	_finish_deck_reorder()
+
+
+func request_cancel_deck_reorder() -> void:
+	if flow_state != FlowState.DECK_REORDER or private_card_owner == null or private_card_owner.is_ai:
+		return
+	deck_reorder_top = private_cards.duplicate()
+	deck_reorder_bottom.clear()
+	_add_log("取消调整【观星】，按原顺序放回牌堆顶。")
+	_finish_deck_reorder()
+
+
+func _perform_ai_confirm_deck_reorder() -> void:
+	if flow_state == FlowState.DECK_REORDER and private_card_owner != null and private_card_owner.is_ai:
+		_finish_deck_reorder()
+
+
+func _finish_deck_reorder() -> void:
+	for index: int in range(deck_reorder_bottom.size() - 1, -1, -1):
+		draw_pile.push_front(deck_reorder_bottom[index])
+	for index: int in range(deck_reorder_top.size() - 1, -1, -1):
+		draw_pile.push_back(deck_reorder_top[index])
+	_add_log("【观星】完成：%d张置顶，%d张置底。" % [deck_reorder_top.size(), deck_reorder_bottom.size()])
+	var continuation: Callable = _async_skill_continue
+	private_cards.clear()
+	private_card_owner = null
+	deck_reorder_top.clear()
+	deck_reorder_bottom.clear()
+	_async_skill_continue = Callable()
+	_call_safe(continuation)
+
+
+func _begin_luoshen(owner: BattlePlayer, continuation: Callable) -> void:
+	if not _luoshen_final_continue.is_valid():
+		_luoshen_final_continue = continuation
+	_start_judgement(&"luoshen", owner, Callable(self, "_evaluate_luoshen"), Callable(self, "_after_luoshen").bind(owner))
+
+
+func _evaluate_luoshen(context: JudgementContextScript) -> void:
+	var black: bool = context.effective_card.is_black()
+	context.result_data["black"] = black
+	if black:
+		context.claim(context.judged_player)
+	_add_log("【洛神】最终判定为%s，%s。" % [context.effective_card.identity_text(), "黑色，获得此牌" if black else "红色，流程结束"])
+
+
+func _after_luoshen(context: JudgementContextScript, owner: BattlePlayer) -> void:
+	if not bool(context.result_data.get("black", false)):
+		_finish_luoshen()
+		return
+	owner.luoshen_cards_gained += 1
+	var skill: Skill = owner.get_skill(&"luoshen")
+	skill_owner = owner
+	skill_actor = owner
+	pending_skill = skill
+	_skill_event_context = RefCounted.new()
+	_skill_confirm_continue = Callable(self, "_repeat_luoshen")
+	_skill_cancel_continue = Callable(self, "_finish_luoshen")
+	flow_state = FlowState.SKILL_CONFIRM
+	_add_log("%s 已通过【洛神】获得%d张牌，是否继续判定？" % [owner.player_name, owner.luoshen_cards_gained])
+	_emit_state()
+	if owner.is_ai: _schedule("_perform_ai_skill_confirm", 0.2)
+
+
+func _repeat_luoshen() -> void:
+	pass
+
+
+func _finish_luoshen() -> void:
+	var continuation: Callable = _luoshen_final_continue
+	_luoshen_final_continue = Callable()
+	_clear_skill_context()
+	_call_safe(continuation)
+
+
+func _begin_fanjian(source: BattlePlayer) -> void:
+	if source == null or source.hand.is_empty():
+		_return_to_play()
+		return
+	_fanjian_source = source
+	_fanjian_target = other_player(source)
+	flow_state = FlowState.CHOOSING_SUIT
+	choice_owner = _fanjian_target
+	choice_labels = ["黑桃", "红桃", "梅花", "方块"]
+	_add_log("%s 发动【反间】：%s 先选择一种花色，尚未查看随机牌。" % [source.player_name, _fanjian_target.player_name])
+	_emit_state()
+	if _fanjian_target.is_ai:
+		_schedule("_perform_ai_choose_fanjian_suit", 0.25)
+
+
+func request_choose_suit(suit_index: int) -> void:
+	if flow_state != FlowState.CHOOSING_SUIT or choice_owner == null or choice_owner.is_ai:
+		return
+	if suit_index < 0 or suit_index > 3:
+		return
+	_resolve_fanjian_suit(suit_index)
+
+
+func _perform_ai_choose_fanjian_suit() -> void:
+	if flow_state == FlowState.CHOOSING_SUIT and choice_owner != null and choice_owner.is_ai:
+		_resolve_fanjian_suit(randi_range(0, 3))
+
+
+func _resolve_fanjian_suit(suit_index: int) -> void:
+	_fanjian_selected_suit = suit_index + 1
+	var source: BattlePlayer = _fanjian_source
+	var target: BattlePlayer = _fanjian_target
+	choice_labels.clear()
+	choice_owner = null
+	if source == null or target == null or source.hand.is_empty():
+		_add_log("【反间】获得牌前来源已无手牌，安全结束。")
+		_return_to_play()
+		return
+	var index: int = randi_range(0, source.hand.size() - 1)
+	var gained: Card = source.remove_card_at(index)
+	target.add_card(gained)
+	_add_log("%s 选择%s并随机获得%s；此时才公开牌面。" % [target.player_name, Card.suit_name(_fanjian_selected_suit), gained.identity_text()])
+	if gained.suit == _fanjian_selected_suit:
+		_add_log("【反间】花色相同，不造成伤害。")
+		_return_to_play()
+	else:
+		var use_context := SkillUseContext.new(source, [], Card.CardType.DUEL, source.get_skill(&"fanjian"), target, true, "【反间】")
+		_start_damage(source, target, 1, DamageNature.NORMAL, Callable(self, "_return_to_play"), null, use_context, "【反间】")
+
+
+## 将同一时机的技能一次性构造后串行结算，避免异步选择覆盖 pending_skill。
+func _enqueue_triggers(
+	timing: StringName,
+	event_context: RefCounted,
+	owners: Array[BattlePlayer],
+	continuation: Callable
+) -> void:
+	if not _trigger_queue.is_empty() or _trigger_queue_continue.is_valid():
+		_trigger_stack.append({"queue": _trigger_queue.duplicate(), "continuation": _trigger_queue_continue})
+	_trigger_queue.clear()
+	_trigger_queue_continue = continuation
+	for owner: BattlePlayer in owners:
+		if owner == null or owner.hp <= 0:
+			continue
+		for skill: Skill in owner.skills:
+			if skill.activation_mode != Skill.ActivationMode.TRIGGERED or skill.trigger_timing() != timing:
+				continue
+			if not owner.can_pay_skill_usage(skill) or not skill.can_trigger(event_context, self, owner):
+				continue
+			var repeat_count: int = maxi(skill.trigger_repeat_count(event_context, self, owner), 0)
+			for _index: int in repeat_count:
+				_trigger_queue.append(TriggerEntryScript.new(owner, skill, event_context, timing))
+	_process_next_trigger()
+
+
+func _process_next_trigger() -> void:
+	while not _trigger_queue.is_empty():
+		var entry: TriggerEntryScript = _trigger_queue.pop_front()
+		if entry.owner == null or entry.owner.hp <= 0:
+			continue
+		if not entry.owner.can_pay_skill_usage(entry.skill) or not entry.skill.can_trigger(entry.event_context, self, entry.owner):
+			continue
+		_offer_triggered_skill(entry.owner, entry.skill, entry.event_context, Callable(self, "_process_next_trigger"))
+		return
+	var continuation: Callable = _trigger_queue_continue
+	if not _trigger_stack.is_empty():
+		var previous: Dictionary = _trigger_stack.pop_back()
+		_trigger_queue = previous.queue
+		_trigger_queue_continue = previous.continuation
+	else:
+		_trigger_queue_continue = Callable()
+	_call_safe(continuation)
 
 
 func request_dodge() -> void:
@@ -1236,7 +1809,7 @@ func request_response_card() -> void:
 				_reject("没有所需的响应牌。")
 				return
 			var response: Card = _take_hand_card_to_processing(pending_target, index)
-			var context := SkillUseContext.new(
+			var response_context := SkillUseContext.new(
 				pending_target,
 				[response],
 				_response_card_type,
@@ -1245,7 +1818,7 @@ func request_response_card() -> void:
 				false,
 				"群体锦囊响应"
 			)
-			_accept_effective_response(context, FlowState.AOE_RESPONSE)
+			_accept_effective_response(response_context, FlowState.AOE_RESPONSE)
 		FlowState.DUEL_RESPONSE, FlowState.MULTI_RESPONSE:
 			if flow_state == FlowState.MULTI_RESPONSE and _multi_response_origin != FlowState.DUEL_RESPONSE:
 				return
@@ -1371,7 +1944,32 @@ func request_end_play_phase() -> void:
 	):
 		return
 	selected_hand_index = -1
-	_enter_discard_phase()
+	_finish_play_phase()
+
+
+func _finish_play_phase() -> void:
+	if flow_state == FlowState.GAME_OVER:
+		return
+	flow_state = FlowState.IDLE
+	_enqueue_triggers(&"after_play_phase", RefCounted.new(), [current_player()], Callable(self, "_after_play_phase_triggers"))
+
+
+func _after_play_phase_triggers() -> void:
+	if current_player().skip_discard_this_turn:
+		phase = Phase.END
+		flow_state = FlowState.IDLE
+		_add_log("弃牌阶段已跳过，进入结束阶段。")
+		_finish_turn_from_end_phase()
+	else:
+		_enter_discard_phase()
+
+
+func _finish_turn_from_end_phase() -> void:
+	current_player().wine_active = false
+	_add_log("结束阶段。")
+	_emit_state()
+	current_player_index = 1 - current_player_index
+	_schedule("_begin_turn", 0.6)
 
 
 func request_discard(hand_index: int) -> void:
@@ -1446,7 +2044,7 @@ func _is_valid_trick_target(card: Card, source: BattlePlayer, target: BattlePlay
 		Card.CardType.STEAL:
 			return target != source and distance_between(source, target) == 1 and not target.hand.is_empty()
 		Card.CardType.DUEL:
-			return target != source
+			return target != source and _skills_allow_target(source, target, Card.CardType.DUEL)
 		Card.CardType.BORROW_SWORD:
 			return (
 				target != source
@@ -1675,6 +2273,7 @@ func _response_requirement(context: SkillUseContext, responder: BattlePlayer) ->
 func _accept_effective_response(context: SkillUseContext, origin: FlowState) -> void:
 	if context == null:
 		return
+	_record_effective_card_action(context.user, context.effective_card_type)
 	if context.effective_card_type == Card.CardType.DODGE:
 		response_received_count += 1
 		_add_log("%s 打出第 %d/%d 张【闪】。" % [
@@ -2265,20 +2864,19 @@ func _resolve_bagua_judgement(defender: BattlePlayer) -> void:
 	if not can_use_bagua(defender):
 		return
 	_bagua_attempted = true
-	var judged: Card = _draw_one_from_pile()
-	if judged == null:
-		_add_log("牌堆无牌，【八卦阵】判定失败。")
-		return
-	discard_pile.append(judged)
-	_add_log("%s 发动【八卦阵】，判定为%s（%s）。" % [
-		defender.player_name,
-		judged.identity_text(),
-		"红色" if judged.is_red() else "黑色",
-	])
-	if judged.is_red():
+	_start_judgement(&"bagua", defender, Callable(self, "_evaluate_bagua"), Callable(self, "_after_bagua").bind(defender))
+
+
+func _evaluate_bagua(context: JudgementContextScript) -> void:
+	context.result_data["success"] = context.effective_card.is_red()
+	_add_log("%s 发动【八卦阵】，最终判定为%s（%s）。" % [context.judged_player.player_name, context.effective_card.identity_text(), "红色" if context.effective_card.is_red() else "黑色"])
+
+
+func _after_bagua(context: JudgementContextScript, defender: BattlePlayer) -> void:
+	if bool(context.result_data.get("success", false)):
 		_add_log("【八卦阵】判定成功，视为 %s 打出一张【闪】。" % defender.player_name)
 		if flow_state in [FlowState.RESPONDING_SLASH, FlowState.MULTI_RESPONSE]:
-			var context := SkillUseContext.new(
+			var response_context := SkillUseContext.new(
 				defender,
 				[],
 				Card.CardType.DODGE,
@@ -2287,7 +2885,7 @@ func _resolve_bagua_judgement(defender: BattlePlayer) -> void:
 				true,
 				"【八卦阵】"
 			)
-			_accept_effective_response(context, FlowState.RESPONDING_SLASH)
+			_accept_effective_response(response_context, FlowState.RESPONDING_SLASH)
 		elif flow_state == FlowState.AOE_RESPONSE:
 			_finish_nullifiable_effect()
 	else:
@@ -2476,7 +3074,7 @@ func _begin_turn() -> void:
 	_add_log("—— 第 %d 回合：%s 的回合 ——" % [turn_number, active.player_name])
 	_add_log("开始阶段。")
 	_emit_state()
-	_begin_judgement_phase()
+	_enqueue_triggers(&"start_phase", RefCounted.new(), [active], Callable(self, "_begin_judgement_phase"))
 
 
 func _begin_judgement_phase() -> void:
@@ -2512,45 +3110,192 @@ func _process_next_judgement() -> void:
 
 
 func _perform_judgement() -> void:
-	var judged_card: Card = current_player().remove_delayed_trick(_judging_card.card_type)
-	var result: Card = _draw_one_from_pile()
-	if result == null:
-		discard_pile.append(judged_card)
+	_judged_delayed_card = current_player().remove_delayed_trick(_judging_card.card_type)
+	if _judged_delayed_card == null:
 		_finish_nullifiable_effect()
 		return
-	discard_pile.append(result)
-	_add_log("【%s】判定牌为%s。" % [judged_card.display_name, result.identity_text()])
-	match judged_card.card_type:
+	_start_judgement(
+		StringName("delayed_%d" % int(_judged_delayed_card.card_type)),
+		current_player(),
+		Callable(self, "_evaluate_delayed_judgement"),
+		Callable(self, "_after_delayed_judgement")
+	)
+
+
+func _evaluate_delayed_judgement(context: JudgementContextScript) -> void:
+	var result: Card = context.effective_card
+	_add_log("【%s】最终判定牌为%s。" % [_judged_delayed_card.display_name, result.identity_text()])
+	match _judged_delayed_card.card_type:
 		Card.CardType.INDULGENCE:
-			discard_pile.append(judged_card)
-			if result.suit != Card.Suit.HEART:
+			context.result_data["indulgence_miss"] = result.suit != Card.Suit.HEART
+		Card.CardType.SUPPLY_SHORTAGE:
+			context.result_data["supply_miss"] = result.suit != Card.Suit.CLUB
+		Card.CardType.LIGHTNING:
+			context.result_data["lightning_hit"] = result.suit == Card.Suit.SPADE and result.rank >= 2 and result.rank <= 9
+
+
+func _after_delayed_judgement(context: JudgementContextScript) -> void:
+	var delayed: Card = _judged_delayed_card
+	_judged_delayed_card = null
+	if delayed == null:
+		_finish_nullifiable_effect()
+		return
+	match delayed.card_type:
+		Card.CardType.INDULGENCE:
+			discard_pile.append(delayed)
+			if bool(context.result_data.get("indulgence_miss", false)):
 				_skip_play_phase = true
 				_add_log("判定不为红桃：%s 跳过出牌阶段。" % current_player().player_name)
-			else:
-				_add_log("判定为红桃：【乐不思蜀】未生效。")
+			else: _add_log("判定为红桃：【乐不思蜀】未生效。")
 			_finish_nullifiable_effect()
 		Card.CardType.SUPPLY_SHORTAGE:
-			discard_pile.append(judged_card)
-			if result.suit != Card.Suit.CLUB:
+			discard_pile.append(delayed)
+			if bool(context.result_data.get("supply_miss", false)):
 				_skip_draw_phase = true
 				_add_log("判定不为梅花：%s 跳过摸牌阶段。" % current_player().player_name)
-			else:
-				_add_log("判定为梅花：【兵粮寸断】未生效。")
+			else: _add_log("判定为梅花：【兵粮寸断】未生效。")
 			_finish_nullifiable_effect()
 		Card.CardType.LIGHTNING:
-			if result.suit == Card.Suit.SPADE and result.rank >= 2 and result.rank <= 9:
-				discard_pile.append(judged_card)
+			if bool(context.result_data.get("lightning_hit", false)):
+				discard_pile.append(delayed)
 				_add_log("黑桃 2~9：【闪电】命中！")
-				_start_damage(
-					null,
-					current_player(),
-					3,
-					DamageNature.THUNDER,
-					Callable(self, "_finish_nullifiable_effect")
-				)
+				_start_damage(null, current_player(), 3, DamageNature.THUNDER, Callable(self, "_finish_nullifiable_effect"), null, null, "【闪电】")
 			else:
-				_pass_lightning(judged_card)
+				_pass_lightning(delayed)
 				_finish_nullifiable_effect()
+
+
+func _start_judgement(
+	reason: StringName,
+	judged_player: BattlePlayer,
+	result_handler: Callable,
+	continuation: Callable
+) -> void:
+	var card: Card = _draw_one_from_pile()
+	if card == null:
+		_add_log("牌堆中没有可用于判定的牌，判定流程安全结束。")
+		var empty_context := JudgementContextScript.new(reason, judged_player, null)
+		if continuation.is_valid():
+			continuation.call(empty_context)
+		return
+	judgement_context = JudgementContextScript.new(reason, judged_player, card)
+	_judgement_result_handler = result_handler
+	_judgement_continue = continuation
+	_judgement_guicai_owners.clear()
+	for player: BattlePlayer in two_player_action_order(judged_player):
+		if player.has_skill(&"guicai") and player.hp > 0:
+			_judgement_guicai_owners.append(player)
+	_judgement_guicai_index = 0
+	_add_log("%s 的判定翻出%s，进入改判窗口。" % [judged_player.player_name, card.identity_text()])
+	_offer_next_guicai()
+
+
+func _offer_next_guicai() -> void:
+	while _judgement_guicai_index < _judgement_guicai_owners.size():
+		var owner: BattlePlayer = _judgement_guicai_owners[_judgement_guicai_index]
+		_judgement_guicai_index += 1
+		var skill: Skill = owner.get_skill(&"guicai")
+		if skill == null or not skill.can_trigger(judgement_context, self, owner):
+			continue
+		judgement_context.offered_guicai_owners.append(owner.general_id)
+		skill_owner = owner
+		skill_actor = owner
+		pending_skill = skill
+		flow_state = FlowState.JUDGEMENT_REPLACE
+		_add_log("%s 可以发动【鬼才】：当前判定牌为%s。" % [owner.player_name, judgement_context.effective_card.identity_text()])
+		_emit_state()
+		if owner.is_ai:
+			_schedule("_perform_ai_guicai", 0.25)
+		return
+	_finish_judgement_replacement_window()
+
+
+func request_judgement_replace(hand_index: int) -> void:
+	if flow_state != FlowState.JUDGEMENT_REPLACE or skill_actor == null or skill_actor.is_ai:
+		return
+	if hand_index < 0 or hand_index >= skill_actor.hand.size():
+		return
+	_apply_guicai_card(skill_actor, hand_index)
+
+
+func request_pass_judgement_replace() -> void:
+	if flow_state != FlowState.JUDGEMENT_REPLACE or skill_actor == null or skill_actor.is_ai:
+		return
+	_add_log("%s 放弃发动【鬼才】。" % skill_actor.player_name)
+	_clear_skill_context()
+	_offer_next_guicai()
+
+
+func _perform_ai_guicai() -> void:
+	if flow_state != FlowState.JUDGEMENT_REPLACE or skill_actor == null or not skill_actor.is_ai:
+		return
+	var best_index: int = _ai_guicai_card_index(skill_actor, judgement_context)
+	if best_index >= 0:
+		_apply_guicai_card(skill_actor, best_index)
+	else:
+		_add_log("%s 判断改判无益，放弃【鬼才】。" % skill_actor.player_name)
+		_clear_skill_context()
+		_offer_next_guicai()
+
+
+func _apply_guicai_card(owner: BattlePlayer, hand_index: int) -> void:
+	var replacement: Card = owner.remove_card_at(hand_index)
+	var old: Card = judgement_context.replace_with(owner, replacement)
+	discard_pile.append(old)
+	owner.record_skill_use(owner.get_skill(&"guicai"))
+	_add_log("%s 发动【鬼才】，打出%s替换%s；原判定牌进入弃牌堆。" % [owner.player_name, replacement.identity_text(), old.identity_text()])
+	_clear_skill_context()
+	_offer_next_guicai()
+
+
+func _ai_guicai_card_index(owner: BattlePlayer, context: JudgementContextScript) -> int:
+	var current_good: bool = _judgement_is_good_for(context.effective_card, context.reason, context.judged_player)
+	var wants_good: bool = context.judged_player == owner
+	for index: int in owner.hand.size():
+		var candidate_good: bool = _judgement_is_good_for(owner.hand[index], context.reason, context.judged_player)
+		if candidate_good == wants_good and candidate_good != current_good:
+			return index
+	return -1
+
+
+func _judgement_is_good_for(card: Card, reason: StringName, _judged: BattlePlayer) -> bool:
+	if card == null: return false
+	var key: String = String(reason)
+	if key.begins_with("delayed_%d" % int(Card.CardType.INDULGENCE)): return card.suit == Card.Suit.HEART
+	if key.begins_with("delayed_%d" % int(Card.CardType.SUPPLY_SHORTAGE)): return card.suit == Card.Suit.CLUB
+	if key.begins_with("delayed_%d" % int(Card.CardType.LIGHTNING)): return not (card.suit == Card.Suit.SPADE and card.rank >= 2 and card.rank <= 9)
+	if reason == &"bagua": return card.is_red()
+	if reason == &"ganglie": return card.suit == Card.Suit.HEART
+	if reason == &"luoshen": return card.is_black()
+	return false
+
+
+func _finish_judgement_replacement_window() -> void:
+	_clear_skill_context()
+	if judgement_context == null:
+		return
+	if _judgement_result_handler.is_valid():
+		_judgement_result_handler.call(judgement_context)
+	_enqueue_triggers(&"after_judgement", judgement_context, [judgement_context.judged_player], Callable(self, "_finalize_judgement_card"))
+
+
+func _finalize_judgement_card() -> void:
+	var context: JudgementContextScript = judgement_context
+	if context == null:
+		return
+	var card: Card = context.effective_card
+	if context.final_owner != null:
+		context.final_owner.add_card(card)
+		_add_log("最终判定牌%s进入%s的手牌。" % [card.identity_text(), context.final_owner.player_name])
+	else:
+		discard_pile.append(card)
+		_add_log("最终判定牌%s进入弃牌堆。" % card.identity_text())
+	var continuation: Callable = _judgement_continue
+	judgement_context = null
+	_judgement_result_handler = Callable()
+	_judgement_continue = Callable()
+	if continuation.is_valid():
+		continuation.call(context)
 
 
 func _cancel_delayed_judgement() -> void:
@@ -2580,16 +3325,7 @@ func _finish_judgement_phase() -> void:
 		_finish_draw_phase()
 		return
 	_draw_context = DrawContext.new(current_player(), 2)
-	var skill: Skill = _find_triggered_skill(current_player(), &"before_draw", _draw_context)
-	if skill != null:
-		_offer_triggered_skill(
-			current_player(),
-			skill,
-			_draw_context,
-			Callable(self, "_resolve_draw_context")
-		)
-	else:
-		_resolve_draw_context()
+	_enqueue_triggers(&"before_draw", _draw_context, [current_player()], Callable(self, "_resolve_draw_context"))
 
 
 func _resolve_draw_context() -> void:
@@ -2700,24 +3436,21 @@ func _process_damage_queue() -> void:
 	])
 	_emit_state()
 	_last_damage_context = context
-	var triggered: Skill = _find_triggered_skill(target, &"after_damage", context)
-	if triggered != null:
-		_offer_triggered_skill(
-			target,
-			triggered,
-			context,
-			Callable(self, "_continue_after_damage").bind(context)
-		)
-		return
 	_continue_after_damage(context)
 
 
 func _continue_after_damage(context: DamageContext) -> void:
 	var target: BattlePlayer = context.target
 	if target.is_dying():
-		_enter_dying(target, Callable(self, "_process_damage_queue"))
+		_enter_dying(target, Callable(self, "_after_damage_dying_resolved").bind(context))
 	else:
-		_process_damage_queue()
+		_after_damage_dying_resolved(context)
+
+
+func _after_damage_dying_resolved(context: DamageContext) -> void:
+	if flow_state == FlowState.GAME_OVER or context.target.hp <= 0:
+		return
+	_enqueue_triggers(&"after_damage", context, [context.target], Callable(self, "_process_damage_queue"))
 
 
 func _enter_dying(player: BattlePlayer, after: Callable) -> void:
@@ -2942,6 +3675,25 @@ func _perform_ai_play() -> void:
 			_resolve_active_skill()
 			return
 
+	var fanjian: Skill = ai.get_skill(&"fanjian")
+	if fanjian != null and can_use_skill(ai, fanjian):
+		skill_owner = ai
+		skill_actor = ai
+		pending_skill = fanjian
+		_skill_return_state = FlowState.PLAY_ACTIVE
+		_resolve_active_skill()
+		return
+
+	var kurou: Skill = ai.get_skill(&"kurou")
+	if kurou != null and can_use_skill(ai, kurou) and ai.hp > 1 and ai.kurou_ai_uses_this_turn < 1:
+		ai.kurou_ai_uses_this_turn += 1
+		skill_owner = ai
+		skill_actor = ai
+		pending_skill = kurou
+		_skill_return_state = FlowState.PLAY_ACTIVE
+		_resolve_active_skill()
+		return
+
 	var equipment_index: int = _find_equipment_in_hand(ai)
 	if equipment_index >= 0:
 		_play_equipment(ai, equipment_index)
@@ -3034,7 +3786,7 @@ func _perform_ai_play() -> void:
 	if can_use_serpent_spear(ai):
 		_use_serpent_spear(ai)
 		return
-	_enter_discard_phase()
+	_finish_play_phase()
 
 
 func _execute_ai_view_as_play(
@@ -3108,11 +3860,7 @@ func _finish_discard_phase() -> void:
 		return
 	phase = Phase.END
 	flow_state = FlowState.IDLE
-	current_player().wine_active = false
-	_add_log("结束阶段。")
-	_emit_state()
-	current_player_index = 1 - current_player_index
-	_schedule("_begin_turn", 0.6)
+	_finish_turn_from_end_phase()
 
 
 func _take_hand_card(player: BattlePlayer, hand_index: int) -> Card:
@@ -3332,6 +4080,12 @@ func _record_slash_use(player: BattlePlayer) -> void:
 	if player.slash_used_this_turn and player.has_skill(&"paoxiao"):
 		_add_log("【咆哮】锁定技：%s 本出牌阶段可以继续使用【杀】。" % player.player_name)
 	player.slash_used_this_turn = true
+	_record_effective_card_action(player, Card.CardType.SLASH)
+
+
+func _record_effective_card_action(player: BattlePlayer, card_type: Card.CardType) -> void:
+	if player != null and phase == Phase.PLAY and current_player() == player:
+		player.record_effective_card(card_type)
 
 
 func _consume_serpent_spear_cost(player: BattlePlayer) -> Array[Card]:

@@ -114,6 +114,11 @@ func can_trigger(_event_context: RefCounted, _game: Node, _owner: Node) -> bool:
 	return false
 
 
+## 同一个事件应生成的触发次数。通常为一次；遗计按伤害点数返回多次。
+func trigger_repeat_count(_event_context: RefCounted, _game: Node, _owner: Node) -> int:
+	return 1
+
+
 func should_ai_activate(_event_context: RefCounted, _game: Node, _owner: Node) -> bool:
 	return false
 
@@ -132,6 +137,34 @@ func can_activate(_game: Node, _owner: Node) -> bool:
 
 func validate_cost(_cards: Array[Card], _game: Node, _owner: Node) -> bool:
 	return false
+
+
+## 主动技是否需要先选择实体牌代价，以及允许的代价区域。
+func requires_card_cost() -> bool:
+	return true
+
+
+func allows_hand_cost() -> bool:
+	return true
+
+
+func allows_equipment_cost() -> bool:
+	return true
+
+
+## 视为技默认可使用手牌和装备；倾国会关闭装备区入口。
+func allows_view_as_equipment() -> bool:
+	return true
+
+
+## 锁定技对统一目标合法性入口的修正。返回 false 即拒绝成为目标。
+func can_be_targeted_by(
+	_effective_type: Card.CardType,
+	_source: Node,
+	_game: Node,
+	_owner: Node
+) -> bool:
+	return true
 
 
 func can_view_as(

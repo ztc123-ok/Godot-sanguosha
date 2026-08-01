@@ -15,6 +15,15 @@ const GENERAL_ORDER: Array[StringName] = [
 	&"ganning",
 	&"sunquan",
 	&"lvbu",
+	&"simayi",
+	&"xiahoudun",
+	&"guojia",
+	&"zhenji",
+	&"liubei",
+	&"zhugeliang",
+	&"lvmeng",
+	&"huanggai",
+	&"zhouyu",
 ]
 
 
@@ -38,6 +47,24 @@ static func create_general(general_id: StringName) -> GeneralDefinition:
 			return GeneralDefinition.new(&"sunquan", "孙权", "吴", 4, PackedStringArray(["zhiheng"]))
 		&"lvbu":
 			return GeneralDefinition.new(&"lvbu", "吕布", "群", 4, PackedStringArray(["wushuang"]))
+		&"simayi":
+			return GeneralDefinition.new(&"simayi", "司马懿", "魏", 3, PackedStringArray(["fankui", "guicai"]))
+		&"xiahoudun":
+			return GeneralDefinition.new(&"xiahoudun", "夏侯惇", "魏", 4, PackedStringArray(["ganglie"]))
+		&"guojia":
+			return GeneralDefinition.new(&"guojia", "郭嘉", "魏", 3, PackedStringArray(["tiandu", "yiji"]))
+		&"zhenji":
+			return GeneralDefinition.new(&"zhenji", "甄姬", "魏", 3, PackedStringArray(["qingguo", "luoshen"]))
+		&"liubei":
+			return GeneralDefinition.new(&"liubei", "刘备", "蜀", 4, PackedStringArray(["rende"]))
+		&"zhugeliang":
+			return GeneralDefinition.new(&"zhugeliang", "诸葛亮", "蜀", 3, PackedStringArray(["guanxing", "kongcheng"]))
+		&"lvmeng":
+			return GeneralDefinition.new(&"lvmeng", "吕蒙", "吴", 4, PackedStringArray(["keji"]))
+		&"huanggai":
+			return GeneralDefinition.new(&"huanggai", "黄盖", "吴", 4, PackedStringArray(["kurou"]))
+		&"zhouyu":
+			return GeneralDefinition.new(&"zhouyu", "周瑜", "吴", 3, PackedStringArray(["yingzi", "fanjian"]))
 	return null
 
 
@@ -54,4 +81,3 @@ static func all_generals() -> Array[GeneralDefinition]:
 
 static func is_valid_id(general_id: StringName) -> bool:
 	return general_id in GENERAL_ORDER
-

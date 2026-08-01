@@ -27,6 +27,12 @@ var slash_used_this_turn: bool = false
 var wine_active: bool = false
 var chained: bool = false
 var luoyi_active: bool = false
+var play_phase_effective_card_types: Array[int] = []
+var skip_discard_this_turn: bool = false
+var rende_given_this_phase: int = 0
+var rende_recovery_consumed: bool = false
+var luoshen_cards_gained: int = 0
+var kurou_ai_uses_this_turn: int = 0
 
 ## 四个互相独立的装备区；同一装备区始终至多一张牌。
 var weapon: Card = null
@@ -61,6 +67,12 @@ func reset_turn_flags() -> void:
 	slash_used_this_turn = false
 	wine_active = false
 	luoyi_active = false
+	play_phase_effective_card_types.clear()
+	skip_discard_this_turn = false
+	rende_given_this_phase = 0
+	rende_recovery_consumed = false
+	luoshen_cards_gained = 0
+	kurou_ai_uses_this_turn = 0
 	turn_skill_usage.clear()
 
 
@@ -161,6 +173,19 @@ func count_card(card_type: Card.CardType) -> int:
 func take_damage(amount: int) -> void:
 	hp -= maxi(amount, 0)
 	hp_changed.emit(hp, max_hp)
+
+
+func lose_hp(amount: int) -> void:
+	hp -= maxi(amount, 0)
+	hp_changed.emit(hp, max_hp)
+
+
+func record_effective_card(card_type: Card.CardType) -> void:
+	play_phase_effective_card_types.append(int(card_type))
+
+
+func used_effective_card(card_type: Card.CardType) -> bool:
+	return int(card_type) in play_phase_effective_card_types
 
 
 func recover(amount: int) -> void:

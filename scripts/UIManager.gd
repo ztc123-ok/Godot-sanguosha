@@ -45,6 +45,7 @@ extends CanvasLayer
 @onready var log_view: RichTextLabel = %LogView
 
 var game: GameManager
+var general_backdrop: ColorRect
 var general_panel: PanelContainer
 var general_summary: Label
 var start_match_button: Button
@@ -56,6 +57,8 @@ var skill_cards_confirm_button: Button
 var skill_cancel_button: Button
 var reselect_button: Button
 var skill_equipment_buttons: Array[Button] = []
+var selected_private_card_index: int = -1
+var guanxing_top_indices: Array[int] = []
 
 
 func _ready() -> void:
@@ -99,6 +102,10 @@ func bind_game_manager(manager: GameManager) -> void:
 func refresh() -> void:
 	if game == null or game.players.is_empty():
 		return
+	if game.flow_state != GameManager.FlowState.SKILL_ASSIGN_CARDS:
+		selected_private_card_index = -1
+	if game.flow_state != GameManager.FlowState.DECK_REORDER:
+		guanxing_top_indices.clear()
 	var human: BattlePlayer = game.player1
 	var ai: BattlePlayer = game.player2
 
@@ -127,8 +134,8 @@ func refresh() -> void:
 	_update_hp(opponent_hp, opponent_hp_text, ai)
 	player_status.text = _status_text(human)
 	opponent_status.text = _status_text(ai)
-	player_status.tooltip_text = player_status.text
-	opponent_status.tooltip_text = opponent_status.text
+	player_status.tooltip_text = _skill_tooltip(human)
+	opponent_status.tooltip_text = _skill_tooltip(ai)
 	_rebuild_human_hand(human)
 	_rebuild_opponent_hand(ai)
 	_update_actions(human)
@@ -149,6 +156,15 @@ func _update_hp(bar: ProgressBar, label: Label, player: BattlePlayer) -> void:
 
 func _rebuild_human_hand(player: BattlePlayer) -> void:
 	_clear_container(player_hand)
+	if game.flow_state in [GameManager.FlowState.SKILL_ASSIGN_CARDS, GameManager.FlowState.DECK_REORDER] and game.private_card_owner == player:
+		for index: int in game.private_cards.size():
+			var private_view := CardView.new()
+			private_view.configure(game.private_cards[index], index)
+			private_view.card_clicked.connect(_on_private_card_clicked)
+			if index == selected_private_card_index or index in guanxing_top_indices:
+				private_view.set_selected(true)
+			player_hand.add_child(private_view)
+		return
 	if game.flow_state == GameManager.FlowState.CHOOSING_REVEALED:
 		for index: int in game.revealed_cards.size():
 			var revealed_view := CardView.new()
@@ -300,6 +316,10 @@ func _update_actions(human: BattlePlayer) -> void:
 		for index: int in mini(game.choice_labels.size(), choice_buttons.size()):
 			choice_buttons[index].visible = true
 			choice_buttons[index].text = game.choice_labels[index]
+	if game.flow_state == GameManager.FlowState.CHOOSING_SUIT and game.choice_owner == human:
+		for index: int in mini(game.choice_labels.size(), choice_buttons.size()):
+			choice_buttons[index].visible = true
+			choice_buttons[index].text = game.choice_labels[index]
 
 	var rescuing := (
 		game.flow_state == GameManager.FlowState.DYING_RESCUE
@@ -319,12 +339,34 @@ func _update_actions(human: BattlePlayer) -> void:
 		skill_confirm_button.text = "发动【%s】" % game.pending_skill.display_name
 		skill_decline_button.visible = true
 		skill_decline_button.text = "不发动"
+	if game.flow_state == GameManager.FlowState.JUDGEMENT_REPLACE and game.skill_actor == human:
+		skill_decline_button.visible = true
+		skill_decline_button.text = "放弃改判"
+
+	if game.flow_state == GameManager.FlowState.SKILL_ASSIGN_CARDS and game.private_card_owner == human:
+		choice_buttons[0].visible = selected_private_card_index >= 0
+		choice_buttons[0].text = "交给主公"
+		choice_buttons[1].visible = selected_private_card_index >= 0
+		choice_buttons[1].text = "交给反贼"
+		skill_cards_confirm_button.visible = true
+		skill_cards_confirm_button.text = "确认遗计分配"
+		skill_cards_confirm_button.disabled = -1 in game.private_card_assignments
+		skill_cancel_button.visible = true
+		skill_cancel_button.text = "取消调整（全归自己）"
+	if game.flow_state == GameManager.FlowState.DECK_REORDER and game.private_card_owner == human:
+		skill_cards_confirm_button.visible = true
+		skill_cards_confirm_button.text = "确认观星顺序"
+		skill_cards_confirm_button.disabled = false
+		skill_cancel_button.visible = true
+		skill_cancel_button.text = "保持原顺序"
 
 	if game.flow_state == GameManager.FlowState.SKILL_SELECT_CARDS and game.skill_actor == human:
 		skill_cancel_button.visible = true
+		skill_cancel_button.text = "取消技能"
 		skill_cards_confirm_button.visible = (
 			game.pending_skill.activation_mode == Skill.ActivationMode.ACTIVE
 		)
+		skill_cards_confirm_button.text = "确认技能代价"
 		skill_cards_confirm_button.disabled = game.pending_skill_cards.is_empty()
 		_update_skill_equipment_buttons(human)
 
@@ -338,6 +380,10 @@ func _update_actions(human: BattlePlayer) -> void:
 		GameManager.FlowState.SKILL_SELECT_CARDS,
 		GameManager.FlowState.SKILL_SELECT_TARGET,
 		GameManager.FlowState.SKILL_RESOLVING,
+		GameManager.FlowState.JUDGEMENT_REPLACE,
+		GameManager.FlowState.DECK_REORDER,
+		GameManager.FlowState.SKILL_ASSIGN_CARDS,
+		GameManager.FlowState.CHOOSING_SUIT,
 	]:
 		for index: int in mini(human.skills.size(), skill_buttons.size()):
 			var skill: Skill = human.skills[index]
@@ -380,6 +426,13 @@ func _status_text(player: BattlePlayer) -> String:
 		delayed.append("闪电")
 	states.append("判:%s" % ("空" if delayed.is_empty() else "/".join(delayed)))
 	return " · ".join(states)
+
+
+func _skill_tooltip(player: BattlePlayer) -> String:
+	var lines: PackedStringArray = ["%s · %s · %s" % [player.role_name, player.general_name, player.kingdom]]
+	for skill: Skill in player.skills:
+		lines.append("【%s】%s / %s\n%s" % [skill.display_name, skill.activation_text(), skill.usage_text(), skill.description])
+	return "\n\n".join(lines)
 
 
 func _update_target_highlight() -> void:
@@ -463,7 +516,23 @@ func _on_serpent_spear() -> void:
 
 
 func _on_choice(index: int) -> void:
-	game.request_option(index)
+	if game.flow_state == GameManager.FlowState.CHOOSING_SUIT:
+		game.request_choose_suit(index)
+	elif game.flow_state == GameManager.FlowState.SKILL_ASSIGN_CARDS and selected_private_card_index >= 0:
+		game.request_assign_private_card(selected_private_card_index, index)
+	else:
+		game.request_option(index)
+
+
+func _on_private_card_clicked(index: int) -> void:
+	if game.flow_state == GameManager.FlowState.SKILL_ASSIGN_CARDS:
+		selected_private_card_index = index
+	elif game.flow_state == GameManager.FlowState.DECK_REORDER:
+		if index in guanxing_top_indices:
+			guanxing_top_indices.erase(index)
+		else:
+			guanxing_top_indices.append(index)
+	refresh()
 
 
 func _on_skill_pressed(button: Button) -> void:
@@ -475,15 +544,28 @@ func _on_skill_confirm() -> void:
 
 
 func _on_skill_decline() -> void:
-	game.request_decline_skill()
+	if game.flow_state == GameManager.FlowState.JUDGEMENT_REPLACE:
+		game.request_pass_judgement_replace()
+	else:
+		game.request_decline_skill()
 
 
 func _on_skill_cards_confirm() -> void:
-	game.request_confirm_skill_cards()
+	if game.flow_state == GameManager.FlowState.SKILL_ASSIGN_CARDS:
+		game.request_confirm_card_assignment()
+	elif game.flow_state == GameManager.FlowState.DECK_REORDER:
+		game.request_confirm_deck_reorder(guanxing_top_indices)
+	else:
+		game.request_confirm_skill_cards()
 
 
 func _on_skill_cancel() -> void:
-	game.request_cancel_skill()
+	if game.flow_state == GameManager.FlowState.SKILL_ASSIGN_CARDS:
+		game.request_cancel_card_assignment()
+	elif game.flow_state == GameManager.FlowState.DECK_REORDER:
+		game.request_cancel_deck_reorder()
+	else:
+		game.request_cancel_skill()
 
 
 func _on_skill_equipment(button: Button) -> void:
@@ -558,6 +640,13 @@ func _build_skill_action_buttons() -> void:
 
 
 func _build_general_selection_panel() -> void:
+	general_backdrop = ColorRect.new()
+	general_backdrop.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	general_backdrop.color = Color(0.008, 0.012, 0.018, 0.9)
+	general_backdrop.z_index = 99
+	general_backdrop.mouse_filter = Control.MOUSE_FILTER_STOP
+	root.add_child(general_backdrop)
+
 	general_panel = PanelContainer.new()
 	general_panel.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	general_panel.offset_left = 54.0
@@ -566,6 +655,20 @@ func _build_general_selection_panel() -> void:
 	general_panel.offset_bottom = -28.0
 	general_panel.z_index = 100
 	general_panel.mouse_filter = Control.MOUSE_FILTER_STOP
+	var panel_style := StyleBoxFlat.new()
+	panel_style.bg_color = Color(0.035, 0.045, 0.055, 0.99)
+	panel_style.border_width_left = 2
+	panel_style.border_width_top = 2
+	panel_style.border_width_right = 2
+	panel_style.border_width_bottom = 2
+	panel_style.border_color = Color(0.68, 0.48, 0.22, 0.95)
+	panel_style.corner_radius_top_left = 14
+	panel_style.corner_radius_top_right = 14
+	panel_style.corner_radius_bottom_right = 14
+	panel_style.corner_radius_bottom_left = 14
+	panel_style.shadow_color = Color(0.0, 0.0, 0.0, 0.7)
+	panel_style.shadow_size = 14
+	general_panel.add_theme_stylebox_override("panel", panel_style)
 	root.add_child(general_panel)
 
 	var margin := MarginContainer.new()
@@ -583,43 +686,81 @@ func _build_general_selection_panel() -> void:
 	title.text = "选择主公武将"
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	title.add_theme_font_size_override("font_size", 28)
+	title.add_theme_color_override("font_color", Color(0.96, 0.79, 0.42))
 	layout.add_child(title)
 
 	general_summary = Label.new()
 	general_summary.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	general_summary.text = "请选择武将"
+	general_summary.add_theme_font_size_override("font_size", 16)
+	general_summary.add_theme_color_override("font_color", Color(0.88, 0.9, 0.92))
 	layout.add_child(general_summary)
 
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	layout.add_child(scroll)
 	var grid := GridContainer.new()
 	grid.columns = 3
-	grid.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	grid.add_theme_constant_override("h_separation", 10)
 	grid.add_theme_constant_override("v_separation", 8)
-	layout.add_child(grid)
+	scroll.add_child(grid)
 
 	for definition: GeneralDefinition in GeneralFactory.all_generals():
-		var skill: Skill = SkillFactory.create_skill(StringName(definition.skill_ids[0]))
+		var skill_names: PackedStringArray = []
+		var skill_descriptions: PackedStringArray = []
+		for skill_id: String in definition.skill_ids:
+			var skill: Skill = SkillFactory.create_skill(StringName(skill_id))
+			if skill != null:
+				skill_names.append("【%s】" % skill.display_name)
+				skill_descriptions.append("【%s】%s\n%s" % [skill.display_name, skill.activation_text(), skill.description])
+		var card_panel := PanelContainer.new()
+		card_panel.custom_minimum_size = Vector2(340.0, 154.0)
+		card_panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var card_style := StyleBoxFlat.new()
+		card_style.bg_color = Color(0.075, 0.09, 0.105, 1.0)
+		card_style.border_width_left = 1
+		card_style.border_width_top = 1
+		card_style.border_width_right = 1
+		card_style.border_width_bottom = 1
+		card_style.border_color = Color(0.28, 0.34, 0.38, 1.0)
+		card_style.corner_radius_top_left = 8
+		card_style.corner_radius_top_right = 8
+		card_style.corner_radius_bottom_right = 8
+		card_style.corner_radius_bottom_left = 8
+		card_panel.add_theme_stylebox_override("panel", card_style)
+		grid.add_child(card_panel)
+
+		var card_margin := MarginContainer.new()
+		card_margin.add_theme_constant_override("margin_left", 8)
+		card_margin.add_theme_constant_override("margin_top", 8)
+		card_margin.add_theme_constant_override("margin_right", 8)
+		card_margin.add_theme_constant_override("margin_bottom", 8)
+		card_panel.add_child(card_margin)
 		var card_box := VBoxContainer.new()
-		card_box.custom_minimum_size = Vector2(0.0, 118.0)
-		card_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		card_box.add_theme_constant_override("separation", 3)
-		grid.add_child(card_box)
+		card_box.add_theme_constant_override("separation", 5)
+		card_margin.add_child(card_box)
 		var button := Button.new()
-		button.custom_minimum_size = Vector2(0.0, 54.0)
+		button.custom_minimum_size = Vector2(0.0, 58.0)
 		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		button.text = "%s · %s · %d体力\n【%s】" % [
+		button.add_theme_font_size_override("font_size", 16)
+		button.add_theme_color_override("font_color", Color(0.97, 0.93, 0.82))
+		button.add_theme_color_override("font_hover_color", Color(1.0, 0.86, 0.5))
+		button.text = "%s · %s · %d体力\n%s" % [
 			definition.display_name,
 			definition.kingdom,
 			definition.max_hp,
-			skill.display_name,
+			" ".join(skill_names),
 		]
-		button.tooltip_text = skill.description
+		button.tooltip_text = "\n\n".join(skill_descriptions)
 		button.pressed.connect(_on_general_selected.bind(definition.id))
 		card_box.add_child(button)
 		var description := Label.new()
-		description.text = skill.description
+		description.text = "\n".join(skill_descriptions)
 		description.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		description.add_theme_font_size_override("font_size", 13)
+		description.add_theme_color_override("font_color", Color(0.84, 0.87, 0.9))
 		description.size_flags_vertical = Control.SIZE_EXPAND_FILL
 		card_box.add_child(description)
 
@@ -642,7 +783,9 @@ func _build_general_selection_panel() -> void:
 func _update_general_panel() -> void:
 	if general_panel == null:
 		return
-	general_panel.visible = game.flow_state == GameManager.FlowState.GENERAL_SELECTION
+	var selection_visible := game.flow_state == GameManager.FlowState.GENERAL_SELECTION
+	general_backdrop.visible = selection_visible
+	general_panel.visible = selection_visible
 	if not general_panel.visible:
 		return
 	var ready: bool = game.player1.general_id != &"" and game.player2.general_id != &""
@@ -664,14 +807,16 @@ func _update_skill_equipment_buttons(player: BattlePlayer) -> void:
 	for card: Card in equipment:
 		if visible_index >= skill_equipment_buttons.size():
 			break
+		if game.pending_skill.activation_mode == Skill.ActivationMode.ACTIVE and not game.pending_skill.allows_equipment_cost():
+			continue
 		if (
 			game.pending_skill.activation_mode == Skill.ActivationMode.VIEW_AS
-			and not game.pending_skill.can_view_as(
+			and (not game.pending_skill.allows_view_as_equipment() or not game.pending_skill.can_view_as(
 				card,
 				game._skill_effective_card_type,
 				game,
 				player
-			)
+			))
 		):
 			continue
 		var slot: int = game._equipment_slot_for_card(player, card)

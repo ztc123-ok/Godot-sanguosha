@@ -39,9 +39,12 @@ func _ready() -> void:
 
 
 func _test_general_factory_and_skill_metadata() -> void:
-	var ids: Array[StringName] = GeneralFactory.all_general_ids()
+	var all_ids: Array[StringName] = GeneralFactory.all_general_ids()
+	var ids: Array[StringName] = []
+	for general_id: StringName in all_ids.slice(0, 9):
+		ids.append(general_id)
 	var unique: Dictionary = {}
-	_expect(ids.size() == 9, "GeneralFactory 提供九名武将")
+	_expect(ids.size() == 9 and all_ids.size() >= 9, "GeneralFactory 保留完整的首批九名武将")
 	for general_id: StringName in ids:
 		var definition: GeneralDefinition = GeneralFactory.create_general(general_id)
 		_expect(definition != null, "可创建武将 %s" % general_id)
