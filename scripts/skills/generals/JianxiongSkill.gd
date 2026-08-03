@@ -36,7 +36,13 @@ func build_resolution_request(
 	_owner: Node
 ) -> Dictionary:
 	var damage := event_context as DamageContext
+	var cards: Array[Card] = []
+	if damage != null:
+		cards = damage.source_cards.duplicate()
+		if cards.is_empty() and damage.source_card != null:
+			cards.append(damage.source_card)
 	return {
 		"action": &"gain_processing_card",
 		"card": damage.source_card,
+		"cards": cards,
 	}

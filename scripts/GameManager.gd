@@ -1498,13 +1498,18 @@ func _apply_skill_resolution(
 	var asynchronous: bool = false
 	match action:
 		&"gain_processing_card":
-			var card: Card = request.get("card")
-			if _claim_processing_card(owner, card):
-				_add_log("%s 通过【%s】获得了造成伤害的%s。" % [
-					owner.player_name,
-					skill.display_name,
-					card.identity_text(),
-				])
+			var gain_cards: Array = request.get("cards", [])
+			if gain_cards.is_empty():
+				var single_card: Card = request.get("card")
+				if single_card != null:
+					gain_cards = [single_card]
+			for gained_card: Card in gain_cards:
+				if _claim_processing_card(owner, gained_card):
+					_add_log("%s 通过【%s】获得了造成伤害的%s。" % [
+						owner.player_name,
+						skill.display_name,
+						gained_card.identity_text(),
+					])
 		&"replace_draw_with_steal":
 			var draw := event_context as DrawContext
 			var target: BattlePlayer = other_player(owner)
@@ -4005,9 +4010,28 @@ func _after_delayed_judgement(context: JudgementContextScript) -> void:
 			_finish_nullifiable_effect()
 		Card.CardType.LIGHTNING:
 			if bool(context.result_data.get("lightning_hit", false)):
-				discard_pile.append(delayed)
+				## 闪电牌进入处理区并作为伤害来源实体牌传入，使【奸雄】等可以获取。
+				_move_card_to_processing(delayed)
 				_add_log("黑桃 2~9：【闪电】命中！")
-				_start_damage(null, current_player(), 3, DamageNature.THUNDER, Callable(self, "_finish_nullifiable_effect"), null, null, "【闪电】")
+				var lightning_context := SkillUseContext.new(
+					null,
+					[delayed],
+					Card.CardType.LIGHTNING,
+					null,
+					current_player(),
+					false,
+					"【闪电】"
+				)
+				_start_damage(
+					null,
+					current_player(),
+					3,
+					DamageNature.THUNDER,
+					Callable(self, "_finish_nullifiable_effect"),
+					null,
+					lightning_context,
+					"【闪电】"
+				)
 			else:
 				_pass_lightning(delayed)
 				_finish_nullifiable_effect()

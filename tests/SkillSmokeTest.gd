@@ -126,6 +126,41 @@ func _test_jianxiong_processing_card() -> void:
 	var jianxiong: Skill = p1.get_skill(&"jianxiong")
 	_expect(not jianxiong.can_trigger(chain_context, game, p1), "连环传播无独立实体牌时不触发重复获得")
 
+	## 回归：张飞【丈八蛇矛】两张手牌当【杀】命中曹操，奸雄应获得全部两张实体牌
+	_prepare_play(&"caocao", &"zhangfei", 1)
+	p2.weapon = SerpentSpear.new()
+	var spear_a := PeachCard.new()
+	var spear_b := WineCard.new()
+	_set_hand(p2, [spear_a, spear_b])
+	_set_hand(p1, [])
+	game._use_serpent_spear(p2)
+	game.request_pass_response()
+	_expect(game.flow_state == GameManager.FlowState.SKILL_CONFIRM and game.pending_skill != null and game.pending_skill.id == &"jianxiong", "丈八蛇矛双牌杀伤害后询问奸雄")
+	game.request_confirm_skill()
+	_expect(spear_a in p1.hand and spear_b in p1.hand and p1.hand.size() == 2, "奸雄获得丈八蛇矛造成的全部两张实体牌")
+
+	## 回归：曹操判定区【闪电】命中，奸雄可获得造成伤害的闪电牌而非进入弃牌堆
+	_prepare_play(&"caocao", &"liubei", 0)
+	var lightning := LightningCard.new()
+	p1.add_delayed_trick(lightning)
+	_set_hand(p1, []); _set_hand(p2, [])
+	var spade_five := SlashCard.new(); spade_five.suit = Card.Suit.SPADE; spade_five.rank = 5
+	game.draw_pile = [spade_five]
+	game._begin_judgement_phase()
+	game._pass_nullification(p2)
+	game._pass_nullification(p1)
+	var guard: int = 0
+	while guard < 20 and game.flow_state not in [GameManager.FlowState.SKILL_CONFIRM, GameManager.FlowState.GAME_OVER, GameManager.FlowState.PLAY_ACTIVE]:
+		guard += 1
+		if game.flow_state == GameManager.FlowState.DYING_RESCUE and game.rescue_actor != null and game.rescue_actor.is_ai:
+			game._perform_ai_rescue()
+		elif game.flow_state == GameManager.FlowState.DYING_RESCUE and game.rescue_actor == p1:
+			game.request_give_up_rescue()
+		await get_tree().create_timer(0.2).timeout
+	_expect(game.flow_state == GameManager.FlowState.SKILL_CONFIRM and game.pending_skill != null and game.pending_skill.id == &"jianxiong", "闪电命中伤害后询问奸雄")
+	game.request_confirm_skill()
+	_expect(lightning in p1.hand and lightning not in game.discard_pile, "奸雄获得造成伤害的闪电牌")
+
 
 func _test_tuxi_draw_replacement() -> void:
 	_prepare_play(&"zhangliao", &"zhangfei")
