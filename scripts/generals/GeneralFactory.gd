@@ -115,3 +115,11 @@ static func all_generals() -> Array[GeneralDefinition]:
 
 static func is_valid_id(general_id: StringName) -> bool:
 	return general_id in GENERAL_ORDER
+
+
+## 读取武将自带的技能 ID 清单（不实例化技能对象）。
+static func skill_ids_of(general_id: StringName) -> PackedStringArray:
+	var definition: GeneralDefinition = create_general(general_id)
+	if definition == null:
+		return PackedStringArray()
+	return definition.skill_ids

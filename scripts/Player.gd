@@ -113,6 +113,40 @@ func has_skill(skill_id: StringName) -> bool:
 	return get_skill(skill_id) != null
 
 
+## 安全装配技能：按 id 去重；返回 false 表示 skill 为空或已存在。
+func add_skill(skill: Skill) -> bool:
+	if skill == null or has_skill(skill.id):
+		return false
+	skills.append(skill)
+	return true
+
+
+## 通过 SkillFactory 按 id 创建并装配；未知 id 返回 false（不抛错）。
+func add_skill_id(skill_id: StringName) -> bool:
+	if has_skill(skill_id):
+		return false
+	var skill: Skill = SkillFactory.create_skill_by_id(skill_id)
+	if skill == null:
+		return false
+	skills.append(skill)
+	return true
+
+
+func remove_skill(skill_id: StringName) -> bool:
+	for index: int in skills.size():
+		if skills[index].id == skill_id:
+			skills.remove_at(index)
+			return true
+	return false
+
+
+func skill_ids() -> Array[StringName]:
+	var result: Array[StringName] = []
+	for skill: Skill in skills:
+		result.append(skill.id)
+	return result
+
+
 func get_skill(skill_id: StringName) -> Skill:
 	for skill: Skill in skills:
 		if skill.id == skill_id:

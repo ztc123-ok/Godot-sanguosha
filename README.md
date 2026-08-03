@@ -133,6 +133,35 @@ Godot_v4.6-stable_win64_console.exe --headless --path . res://tests/PrologueSmok
 
 `RuleSmokeTest` 覆盖基础牌、15 类锦囊、四装备槽、距离、装备技能、无懈链、属性伤害、判定与濒死。`SkillSmokeTest` 覆盖选将、九名武将、技能分类、处理区、虚拟牌、摸牌/伤害上下文、无双多响应和 AI 技能流程。`PrologueSmokeTest` 覆盖序章节点的线性解锁与村落入口。
 
+### 纯 AI 自动化对战（无 UI 死循环 / Fuzz）
+
+`GameManager` 已与 UI 解耦，支持完全无交互的 AI vs AI 对战：
+
+```gdscript
+# 直接开局：双方自动标记为 AI，配将后立即开始首回合，无需任何 UI 回调。
+game.start_automated_match(&"caocao", &"lvbu")
+
+# 自由缝合任意技能（按 ID，未知 ID 安全返回 false/null，不抛 Parse Error）。
+game.start_automated_match(&"sunshangxiang", &"xiahoudun", [&"jizhi", &"lianying"], [&"ganglie"])
+player.add_skill_id(&"kongcheng")
+```
+
+开启方式：
+
+- 代码调用 `start_automated_match()`，或
+- 无头直启：`Godot_v4.6-stable_win64_console.exe --headless --auto-ai --path . res://scenes/Main.tscn`（`_ready` 自动跳过选将并开局）。
+
+纯 AI 模式下状态机由看门狗自动步进：任何决策状态在超时后自动推进到合法下一步，`GAME_OVER` 后按相同配置自动重开形成死循环；卡死超过阈值会自动重开对局并输出 `[WATCHDOG]` 日志。
+
+回归与压测：
+
+```powershell
+Godot_v4.6-stable_win64_console.exe --headless --path . res://tests/AutoMatchSmokeTest.tscn
+Godot_v4.6-stable_win64_console.exe --headless --fuzz --path . res://tests/AutoMatchSmokeTest.tscn
+```
+
+前者验证开局、看门狗自愈与技能缝合；后者以 `time_scale = 100` 随机武将/随机技能死循环压测 30 秒。
+
 ## 第二批标准武将（18 将版本）
 
 战斗选将现已扩展为 18 名武将。新增：司马懿（反馈、鬼才）、夏侯惇（刚烈）、郭嘉（天妒、遗计）、甄姬（倾国、洛神）、刘备（仁德）、诸葛亮（观星、空城）、吕蒙（克己）、黄盖（苦肉）、周瑜（英姿、反间）。第一批 9 名武将、基础牌、15 种锦囊和完整装备系统保持不变。

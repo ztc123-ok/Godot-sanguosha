@@ -40,53 +40,67 @@ const QingnangScript = preload("res://scripts/skills/generals/QingnangSkill.gd")
 const LijianScript = preload("res://scripts/skills/generals/LijianSkill.gd")
 const BiyueScript = preload("res://scripts/skills/generals/BiyueSkill.gd")
 
+## 技能注册表：唯一事实来源。新增技能只需在此登记一行。
+const SKILL_REGISTRY: Dictionary = {
+	&"jianxiong": JianxiongScript,
+	&"tuxi": TuxiScript,
+	&"luoyi": LuoyiScript,
+	&"wusheng": WushengScript,
+	&"paoxiao": PaoxiaoScript,
+	&"longdan": LongdanScript,
+	&"qixi": QixiScript,
+	&"zhiheng": ZhihengScript,
+	&"wushuang": WushuangScript,
+	&"fankui": FankuiScript,
+	&"guicai": GuicaiScript,
+	&"ganglie": GanglieScript,
+	&"tiandu": TianduScript,
+	&"yiji": YijiScript,
+	&"qingguo": QingguoScript,
+	&"luoshen": LuoshenScript,
+	&"rende": RendeScript,
+	&"guanxing": GuanxingScript,
+	&"kongcheng": KongchengScript,
+	&"keji": KejiScript,
+	&"kurou": KurouScript,
+	&"yingzi": YingziScript,
+	&"fanjian": FanjianScript,
+	&"mashu": MashuScript,
+	&"tieqi": TieqiScript,
+	&"jizhi": JizhiScript,
+	&"qicai": QicaiScript,
+	&"guose": GuoseScript,
+	&"liuli": LiuliScript,
+	&"qianxun": QianxunScript,
+	&"lianying": LianyingScript,
+	&"jieyin": JieyinScript,
+	&"xiaoji": XiaojiScript,
+	&"jijiu": JijiuScript,
+	&"qingnang": QingnangScript,
+	&"lijian": LijianScript,
+	&"biyue": BiyueScript,
+}
+
 
 static func create_skill(skill_id: StringName) -> Skill:
-	match skill_id:
-		&"jianxiong":
-			return JianxiongScript.new()
-		&"tuxi":
-			return TuxiScript.new()
-		&"luoyi":
-			return LuoyiScript.new()
-		&"wusheng":
-			return WushengScript.new()
-		&"paoxiao":
-			return PaoxiaoScript.new()
-		&"longdan":
-			return LongdanScript.new()
-		&"qixi":
-			return QixiScript.new()
-		&"zhiheng":
-			return ZhihengScript.new()
-		&"wushuang":
-			return WushuangScript.new()
-		&"fankui": return FankuiScript.new()
-		&"guicai": return GuicaiScript.new()
-		&"ganglie": return GanglieScript.new()
-		&"tiandu": return TianduScript.new()
-		&"yiji": return YijiScript.new()
-		&"qingguo": return QingguoScript.new()
-		&"luoshen": return LuoshenScript.new()
-		&"rende": return RendeScript.new()
-		&"guanxing": return GuanxingScript.new()
-		&"kongcheng": return KongchengScript.new()
-		&"keji": return KejiScript.new()
-		&"kurou": return KurouScript.new()
-		&"yingzi": return YingziScript.new()
-		&"fanjian": return FanjianScript.new()
-		&"mashu": return MashuScript.new()
-		&"tieqi": return TieqiScript.new()
-		&"jizhi": return JizhiScript.new()
-		&"qicai": return QicaiScript.new()
-		&"guose": return GuoseScript.new()
-		&"liuli": return LiuliScript.new()
-		&"qianxun": return QianxunScript.new()
-		&"lianying": return LianyingScript.new()
-		&"jieyin": return JieyinScript.new()
-		&"xiaoji": return XiaojiScript.new()
-		&"jijiu": return JijiuScript.new()
-		&"qingnang": return QingnangScript.new()
-		&"lijian": return LijianScript.new()
-		&"biyue": return BiyueScript.new()
-	return null
+	var script: GDScript = SKILL_REGISTRY.get(skill_id)
+	if script == null:
+		return null
+	return script.new()
+
+
+## 对外统一、安全的静态 API：未知 ID 返回 null，绝不抛 Parse Error。
+static func create_skill_by_id(skill_id: StringName) -> Skill:
+	return create_skill(skill_id)
+
+
+static func is_valid_skill_id(skill_id: StringName) -> bool:
+	return SKILL_REGISTRY.has(skill_id)
+
+
+static func all_skill_ids() -> Array[StringName]:
+	var result: Array[StringName] = []
+	for id: StringName in SKILL_REGISTRY.keys():
+		result.append(id)
+	result.sort_custom(func(a: StringName, b: StringName) -> bool: return String(a) < String(b))
+	return result

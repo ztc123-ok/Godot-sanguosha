@@ -214,10 +214,239 @@ var _judgement_queue: Array[Card] = []
 var _judgement_index: int = 0
 var _judging_card: Card
 
+## ── 自动化（纯 AI）模式 ──────────────────────────────────────────
+## 当 automated_mode 为 true 或双方 is_ai 均为 true 时，状态机不再依赖
+## UI 回调：开局自动配将/开始，决策状态由看门狗自动步进到合法下一步。
+const DEFAULT_WATCHDOG_INTERVAL: float = 1.0
+const WATCHDOG_HARD_RECOVER_SECONDS: float = 30.0
+const WATCHDOG_STUCK_LOG_INTERVAL: float = 10.0
+
+var automated_mode: bool = false
+## 允许纯 AI 对战在 GAME_OVER 后按相同配置自动重开，形成无脚本死循环。
+var auto_recover_stuck_matches: bool = true
+## 看门狗墙钟检查间隔（秒）。Engine.time_scale 不影响该间隔。
+var watchdog_interval: float = DEFAULT_WATCHDOG_INTERVAL
+var _watchdog_accumulator: float = 0.0
+var _watchdog_busy: bool = false
+var _watchdog_kick_count: int = 0
+var _last_watchdog_seen_state: int = -1
+var _stuck_since_wall: float = -1.0
+var _last_stuck_log_wall: float = 0.0
+var _automated_match_config: Dictionary = {}
+## 已排队等待执行的 AI 驱动数量：看门狗跳过这些状态，避免与定时器双驱动。
+var _pending_ai_action_count: int = 0
+
 
 func _ready() -> void:
 	players = [player1, player2]
-	call_deferred("begin_general_selection")
+	if _automated_boot_requested():
+		## 无头/服务端模式下跳过 UI 选将，直接以默认配置开启纯 AI 对战。
+		automated_mode = true
+		call_deferred("start_automated_match")
+	else:
+		## 交互模式：维持原有 UI 选将生命周期。
+		call_deferred("begin_general_selection")
+
+
+func _automated_boot_requested() -> bool:
+	if OS.has_feature("dedicated_server"):
+		return true
+	for arg: String in OS.get_cmdline_args() + OS.get_cmdline_user_args():
+		if arg in ["--auto-ai", "--fuzz", "--automated-match"]:
+			return true
+	return false
+
+
+func set_automated_mode(enabled: bool) -> void:
+	automated_mode = enabled
+
+
+func is_automated_mode() -> bool:
+	return automated_mode
+
+
+## 纯 AI 自动化开局入口：无需任何 UI 交互即可完成配将、技能缝合与首回合开始。
+## 返回 false 表示配置非法且无法回退；未知技能 ID 会被安全忽略（不抛错）。
+func start_automated_match(
+	player1_general_id: StringName = GeneralFactory.DEFAULT_PLAYER_GENERAL,
+	player2_general_id: StringName = GeneralFactory.DEFAULT_AI_GENERAL,
+	player1_extra_skills: Array[StringName] = [],
+	player2_extra_skills: Array[StringName] = []
+) -> bool:
+	automated_mode = true
+	var p1_id: StringName = player1_general_id
+	var p2_id: StringName = player2_general_id
+	if not GeneralFactory.is_valid_id(p1_id):
+		p1_id = GeneralFactory.DEFAULT_PLAYER_GENERAL
+	if not GeneralFactory.is_valid_id(p2_id) or p2_id == p1_id:
+		var candidates: Array[StringName] = GeneralFactory.all_general_ids()
+		candidates.erase(p1_id)
+		candidates.shuffle()
+		p2_id = candidates[0] if not candidates.is_empty() else GeneralFactory.DEFAULT_AI_GENERAL
+	if not setup_generals(p1_id, p2_id):
+		return false
+	player1.is_ai = true
+	player2.is_ai = true
+	for skill_id: StringName in player1_extra_skills:
+		player1.add_skill_id(skill_id)
+	for skill_id: StringName in player2_extra_skills:
+		player2.add_skill_id(skill_id)
+	_automated_match_config = {
+		"p1_general": p1_id,
+		"p2_general": p2_id,
+		"p1_skills": player1_extra_skills.duplicate(),
+		"p2_skills": player2_extra_skills.duplicate(),
+	}
+	## 直接开始首回合；若此前 _ready 的 deferred 调用已进入选将，此处会完整复位。
+	start_match(true)
+	return true
+
+
+func _restart_automated_match() -> void:
+	if _automated_match_config.is_empty():
+		start_automated_match()
+		return
+	start_automated_match(
+		_automated_match_config.get("p1_general", GeneralFactory.DEFAULT_PLAYER_GENERAL),
+		_automated_match_config.get("p2_general", GeneralFactory.DEFAULT_AI_GENERAL),
+		_automated_match_config.get("p1_skills", []),
+		_automated_match_config.get("p2_skills", [])
+	)
+
+
+## 看门狗激活条件：双方均标记为 AI（与调用方是否开启 automated_mode 无关）。
+func _all_ai() -> bool:
+	return (
+		players.size() == 2
+		and player1 != null and player1.is_ai
+		and player2 != null and player2.is_ai
+	)
+
+
+func _process(delta: float) -> void:
+	if flow_state != _last_watchdog_seen_state:
+		_last_watchdog_seen_state = int(flow_state)
+		_stuck_since_wall = -1.0
+	if not _all_ai() or flow_state == FlowState.GAME_OVER:
+		_watchdog_accumulator = 0.0
+		return
+	_watchdog_accumulator += delta
+	if _watchdog_accumulator < watchdog_interval:
+		return
+	_watchdog_accumulator = 0.0
+	_watchdog_step()
+
+
+func _watchdog_step() -> void:
+	if _watchdog_busy:
+		return
+	if _pending_ai_action_count > 0:
+		## 已有定时器将在下帧驱动当前状态，看门狗不重复介入。
+		return
+	_watchdog_busy = true
+	var state: FlowState = flow_state
+	match state:
+		FlowState.GENERAL_SELECTION:
+			_watchdog_kick(state, &"_auto_start_from_selection")
+			_auto_start_from_selection()
+		FlowState.IDLE:
+			if turn_number == 0:
+				## 开局后停在 IDLE（如 start_match(false) 的遗留场景）：补开首回合。
+				_watchdog_kick(state, &"_begin_turn")
+				_begin_turn()
+			else:
+				## 回合间的瞬态 IDLE 不主动干预，避免重复开回合。
+				_watchdog_note_stuck(state)
+		_:
+			var driver: StringName = _ai_driver_for_state(state)
+			if driver != &"":
+				_watchdog_kick(state, driver)
+				call(driver)
+			else:
+				_watchdog_note_stuck(state)
+	_watchdog_busy = false
+
+
+## 决策状态 → AI 驱动方法映射。驱动方法本身带 flow_state/is_ai 守卫，
+## 看门狗重复触发时自动幂等跳过。
+func _ai_driver_for_state(state: FlowState) -> StringName:
+	match state:
+		FlowState.PLAY_ACTIVE:
+			return &"_perform_ai_play"
+		FlowState.DISCARDING:
+			return &"_perform_ai_discard"
+		FlowState.RESPONDING_SLASH, FlowState.AOE_RESPONSE, \
+		FlowState.DUEL_RESPONSE, FlowState.BORROW_RESPONSE, FlowState.MULTI_RESPONSE:
+			return &"_perform_ai_response"
+		FlowState.SKILL_CONFIRM:
+			return &"_perform_ai_skill_confirm"
+		FlowState.CHOOSING_OPTION:
+			return &"_perform_ai_choice"
+		FlowState.CHOOSING_SUIT:
+			return &"_perform_ai_choose_fanjian_suit"
+		FlowState.SKILL_ASSIGN_CARDS:
+			return &"_perform_ai_confirm_private_cards"
+		FlowState.DECK_REORDER:
+			return &"_perform_ai_confirm_deck_reorder"
+		FlowState.NULLIFICATION_RESPONSE:
+			return &"_perform_ai_nullification"
+		FlowState.FIRE_DISCARD:
+			return &"_perform_ai_fire_discard"
+		FlowState.CHOOSING_REVEALED:
+			return &"_perform_ai_amazing_grace"
+		FlowState.JUDGEMENT_REPLACE:
+			return &"_perform_ai_guicai"
+		FlowState.DYING_RESCUE:
+			return &"_perform_ai_rescue"
+	return &""
+
+
+func _auto_start_from_selection() -> void:
+	## 保留测试已注入的合法武将；缺省或非法时回退默认，并保证双方武将不同。
+	if not GeneralFactory.is_valid_id(player1.general_id):
+		player1.assign_general(GeneralFactory.create_general(GeneralFactory.DEFAULT_PLAYER_GENERAL))
+	if not GeneralFactory.is_valid_id(player2.general_id) or player2.general_id == player1.general_id:
+		var candidates: Array[StringName] = GeneralFactory.all_general_ids()
+		candidates.erase(player1.general_id)
+		candidates.shuffle()
+		var p2_id: StringName = candidates[0] if not candidates.is_empty() else GeneralFactory.DEFAULT_AI_GENERAL
+		player2.assign_general(GeneralFactory.create_general(p2_id))
+	start_match()
+
+
+func _watchdog_kick(state: FlowState, driver: StringName) -> void:
+	_watchdog_kick_count += 1
+	_stuck_since_wall = -1.0
+	_add_log("[WATCHDOG] 自动步进：%s -> %s" % [FlowState.keys()[int(state)], driver])
+
+
+func _watchdog_note_stuck(state: FlowState) -> void:
+	var now: float = _wall_time()
+	if _stuck_since_wall < 0.0:
+		_stuck_since_wall = now
+	if (
+		now - _stuck_since_wall >= WATCHDOG_STUCK_LOG_INTERVAL
+		and now - _last_stuck_log_wall >= WATCHDOG_STUCK_LOG_INTERVAL
+	):
+		_last_stuck_log_wall = now
+		push_warning(
+			"[WATCHDOG] 状态 %s 无可用 AI 驱动，等待自愈。phase=%d 回合=%d 当前玩家=%s" % [
+				FlowState.keys()[int(state)],
+				int(phase),
+				turn_number,
+				current_player().player_name,
+			]
+		)
+	if automated_mode and auto_recover_stuck_matches and now - _stuck_since_wall >= WATCHDOG_HARD_RECOVER_SECONDS:
+		_add_log("[WATCHDOG] 状态 %s 卡死超过 %d 秒，自动重开对局。" % [
+			FlowState.keys()[int(state)],
+			int(WATCHDOG_HARD_RECOVER_SECONDS),
+		])
+		_restart_automated_match()
+
+
+func _wall_time() -> float:
+	return Time.get_ticks_msec() / 1000.0
 
 
 func begin_general_selection(preserve_generals: bool = false) -> void:
@@ -3011,6 +3240,11 @@ func _accept_effective_response(context: SkillUseContext, origin: FlowState) -> 
 		return
 	_record_effective_card_action(context.user, context.effective_card_type)
 	if context.effective_card_type == Card.CardType.DODGE:
+		if origin == FlowState.AOE_RESPONSE:
+			## 万箭齐发：AI/玩家打出【闪】即完成本次响应，走锦囊结算而非杀闪路径。
+			_add_log("%s 打出【闪】，响应成功。" % context.user.player_name)
+			_finish_nullifiable_effect()
+			return
 		response_received_count += 1
 		_add_log("%s 打出第 %d/%d 张【闪】。" % [
 			context.user.player_name,
@@ -3380,6 +3614,10 @@ func _perform_ai_nullification() -> void:
 		_play_nullification(responder, index)
 	else:
 		_pass_nullification(responder)
+		## 双人局同一响应者需连续两次放弃才结算；双方 AI 时自动续步，
+		## 不依赖看门狗也能在一帧内完成整条无懈链。
+		if flow_state == FlowState.NULLIFICATION_RESPONSE and players[_nullification_responder_index].is_ai:
+			_schedule("_perform_ai_nullification", 0.3)
 
 
 func _finalize_nullification_chain() -> void:
@@ -3761,6 +3999,9 @@ func _apply_amazing_grace() -> void:
 func _perform_ai_amazing_grace() -> void:
 	if revealed_cards.is_empty():
 		_finish_nullifiable_effect()
+		return
+	if _revealed_selecting_player == null or not _revealed_selecting_player.is_ai:
+		## 高倍速下可能已被上一次选牌清空；等新定时器/看门狗，避免对 Nil 出牌。
 		return
 	var best_index: int = 0
 	var best_score: int = -999
@@ -4465,12 +4706,21 @@ func _declare_death(loser: BattlePlayer) -> void:
 	_add_log("%s 阵亡。%s（%s）获胜！" % [loser.player_name, winner.player_name, winner.role_name])
 	_emit_state()
 	match_finished.emit(winner, loser)
+	if automated_mode:
+		## 纯 AI 死循环：本局结束后按相同配置自动重开。
+		## 不使用 _schedule（其 generation 守卫会被 start_automated_match 复位使回调失效）。
+		if is_inside_tree():
+			get_tree().create_timer(1.0).timeout.connect(_restart_automated_match)
 
 
 func _perform_ai_response() -> void:
 	var response_state: FlowState = _multi_response_origin if flow_state == FlowState.MULTI_RESPONSE else flow_state
 	match response_state:
 		FlowState.RESPONDING_SLASH:
+			if pending_target == null or pending_attacker == null:
+				## 攻击上下文已被清空的状态残留：安全收尾，避免对 Nil 结算。
+				_finish_attack()
+				return
 			if _try_ai_effective_response(pending_target, Card.CardType.DODGE, FlowState.RESPONDING_SLASH):
 				return
 			if can_use_bagua(pending_target):
@@ -4479,6 +4729,10 @@ func _perform_ai_response() -> void:
 				_add_log("%s 未能继续提供【闪】响应。" % pending_target.player_name)
 				_resolve_slash_damage()
 		FlowState.AOE_RESPONSE:
+			if pending_target == null:
+				## AOE 目标已被清空（效果上下文残留）：安全收尾返回出牌阶段。
+				_finish_nullifiable_effect()
+				return
 			if _try_ai_effective_response(pending_target, _response_card_type, FlowState.AOE_RESPONSE):
 				return
 			if _response_card_type == Card.CardType.DODGE and can_use_bagua(pending_target):
@@ -5542,7 +5796,12 @@ func _ai_card_value(card: Card) -> int:
 
 func _schedule(method_name: StringName, delay: float) -> void:
 	var generation: int = _action_generation
+	var is_ai_driver: bool = String(method_name).begins_with("_perform_ai_")
+	if is_ai_driver:
+		_pending_ai_action_count += 1
 	var callback := func() -> void:
+		if is_ai_driver:
+			_pending_ai_action_count = maxi(_pending_ai_action_count - 1, 0)
 		if generation == _action_generation and is_inside_tree():
 			call(method_name)
 	get_tree().create_timer(delay).timeout.connect(callback)

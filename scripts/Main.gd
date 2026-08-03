@@ -13,6 +13,9 @@ func _ready() -> void:
 
 
 func _on_match_finished(winner: BattlePlayer, _loser: BattlePlayer) -> void:
+	## 纯 AI 自动化模式下由 GameManager 自行按相同配置重开，不介入场景流转。
+	if game_manager.is_automated_mode():
+		return
 	if winner == game_manager.player1:
 		PrologueState.complete_active_battle()
 		get_tree().call_deferred("change_scene_to_file", MAP_SCENE)
