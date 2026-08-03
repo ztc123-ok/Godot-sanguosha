@@ -152,11 +152,13 @@ func _run_fuzz() -> void:
 		var s2: Array[StringName] = _random_skills(rng, all_skills)
 		game.start_automated_match(g1, g2, s1, s2)
 		var start_turn: int = game.turn_number
+		## 完整推进本局：直到 GAME_OVER，或至少推进 8 个回合（充分暴露后期
+		## 连环结算/濒死/残局问题），或预算耗尽/看门狗 guard 兜底，避免单局拖死预算。
 		var guard: int = 0
 		while (
-			game.turn_number <= start_turn
-			and game.flow_state != GameManager.FlowState.GAME_OVER
-			and guard < 1200
+			game.flow_state != GameManager.FlowState.GAME_OVER
+			and game.turn_number <= start_turn + 8
+			and guard < 8000
 			and Time.get_ticks_msec() - start_ms < budget_ms
 		):
 			await get_tree().process_frame
@@ -167,14 +169,6 @@ func _run_fuzz() -> void:
 			"fuzz 第 %d 局未卡死在选将/IDLE" % (_fuzz_matches_completed + 1)
 		)
 		max_turn_seen = maxi(max_turn_seen, game.turn_number)
-		var settle: int = 0
-		while (
-			game.flow_state != GameManager.FlowState.GAME_OVER
-			and settle < 600
-			and Time.get_ticks_msec() - start_ms < budget_ms
-		):
-			await get_tree().process_frame
-			settle += 1
 
 	print("AUTO_MATCH_FUZZ: 完成 %d 局，看门狗自愈 %d 次，观察最高回合 %d" % [
 		_fuzz_matches_completed,

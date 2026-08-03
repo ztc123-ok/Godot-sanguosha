@@ -1,9 +1,10 @@
 63f7b34db8d8cdea90c76aacccf841ec
 ::res://::1785745068
 README.md::TextFile::-1::1785745900::0::1::::<><><>0<>0<><>::
-::res://docs/::1785743473
+::res://docs/::1785746940
 ai_refactor_prompt.md::TextFile::-1::1785743302::0::1::::<><><>0<>0<><>::
 ARCHITECTURE.md::TextFile::-1::1785586985::0::1::::<><><>0<>0<><>::
+fuzzing_bug_report.md::TextFile::-1::1785746940::0::1::::<><><>0<>0<><>::
 GDD.md::TextFile::-1::1785512737::0::1::::<><><>0<>0<><>::
 三国杀双人版_Agent复现提示词手册.md::TextFile::-1::1785404733::0::1::::<><><>0<>0<><>::
 三国杀双人版_第三批武将技能_Agent扩展提示词.md::TextFile::-1::1785568959::0::1::::<><><>0<>0<><>::
@@ -15,7 +16,7 @@ GDD.md::TextFile::-1::1785512737::0::1::::<><><>0<>0<><>::
 Main.tscn::PackedScene::-1::1785400197::0::1::::<><><>0<>0<><>::res://scripts/Main.gd<>res://scripts/GameManager.gd<>res://scripts/Player.gd<>res://scripts/UIManager.gd<>res://scripts/ui/PlayerDropZone.gd
 MapScene.tscn::PackedScene::-1::1785483671::0::1::::<><><>0<>0<><>::res://scripts/MapScene.gd
 ::res://scripts/::1785577867
-GameManager.gd::GDScript::903450405819306441::1785745785::0::1::::GameManager<>Node<><>0<>0<><>::
+GameManager.gd::GDScript::903450405819306441::1785747821::0::1::::GameManager<>Node<><>0<>0<><>::
 Main.gd::GDScript::4140350638370331595::1785745785::0::1::::<>Node2D<><>0<>0<><>::
 MapScene.gd::GDScript::5832298744138967808::1785483670::0::1::::<>Control<><>0<>0<><>::
 Player.gd::GDScript::4994981440681219689::1785745869::0::1::::BattlePlayer<>Node<><>0<>0<><>::
@@ -122,8 +123,8 @@ ZhihengSkill.gd::GDScript::1131393380416699795::1785407831::0::1::::ZhihengSkill
 CardView.gd::GDScript::1273264723192871693::1785577867::0::1::::CardView<>PanelContainer<><>0<>0<><>::
 PlayerDropZone.gd::GDScript::3632231722539441377::1785577867::0::1::::PlayerDropZone<>PanelContainer<><>0<>0<><>::
 ::res://script_templates/::1785399988
-::res://tests/::1785746484
-AutoMatchSmokeTest.gd::GDScript::6522783644149805247::1785745785::0::1::::<>Node<><>0<>0<><>::
+::res://tests/::1785747877
+AutoMatchSmokeTest.gd::GDScript::6522783644149805247::1785747654::0::1::::<>Node<><>0<>0<><>::
 AutoMatchSmokeTest.tscn::PackedScene::-1::1785745785::0::1::::<><><>0<>0<><>::res://tests/AutoMatchSmokeTest.gd<>res://scripts/GameManager.gd<>res://scripts/Player.gd
 PrologueSmokeTest.gd::GDScript::4436285908092935311::1785483930::0::1::::<>Node<><>0<>0<><>::
 PrologueSmokeTest.tscn::PackedScene::-1::1785483932::0::1::::<><><>0<>0<><>::res://tests/PrologueSmokeTest.gd

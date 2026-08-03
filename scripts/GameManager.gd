@@ -5133,7 +5133,12 @@ func _enter_discard_phase() -> void:
 	_add_log("进入弃牌阶段：手牌上限等于当前体力。")
 	_emit_state()
 	if current_player().hand.size() <= hand_limit_for(current_player()):
-		_schedule("_finish_discard_phase", 0.3)
+		## AI 一律走 _perform_ai_discard（计入 AI 动作计数，避免看门狗误介入）；
+		## 人类无牌可弃时仍由定时器直接结束。
+		if current_player().is_ai:
+			_schedule("_perform_ai_discard", 0.3)
+		else:
+			_schedule("_finish_discard_phase", 0.3)
 	elif current_player().is_ai:
 		_schedule("_perform_ai_discard", 0.45)
 
@@ -5141,25 +5146,29 @@ func _enter_discard_phase() -> void:
 func _perform_ai_discard() -> void:
 	if flow_state != FlowState.DISCARDING or not current_player().is_ai:
 		return
-	while current_player().hand.size() > hand_limit_for(current_player()):
-		var card: Card = current_player().hand[current_player().hand.size() - 1]
-		_move_cards(
-			current_player(), current_player(), [card], CardZone.DISCARD,
-			"在弃牌阶段弃置", null, null, null,
-			Callable(self, "_after_ai_phase_discard")
-		)
+	var player: BattlePlayer = current_player()
+	var excess: int = player.hand.size() - hand_limit_for(player)
+	if excess <= 0:
+		_finish_discard_phase()
 		return
-	_finish_discard_phase()
+	## 一次性原子弃到上限：弃牌阶段手牌不会归零（上限>=1），不会触发连营等移动后事件。
+	var to_discard: Array[Card] = []
+	var index: int = player.hand.size() - 1
+	while to_discard.size() < excess and index >= 0:
+		to_discard.append(player.hand[index])
+		index -= 1
+	_move_cards(
+		player, player, to_discard, CardZone.DISCARD,
+		"在弃牌阶段弃置", null, null, null,
+		Callable(self, "_after_ai_phase_discard")
+	)
 
 
 func _after_ai_phase_discard() -> void:
 	if flow_state != FlowState.DISCARDING:
 		return
-	_add_log("%s 弃置一张牌。" % current_player().player_name)
-	if current_player().hand.size() > hand_limit_for(current_player()):
-		_schedule("_perform_ai_discard", 0.1)
-	else:
-		_finish_discard_phase()
+	_add_log("%s 弃置到手牌上限。" % current_player().player_name)
+	_finish_discard_phase()
 
 
 func _finish_discard_phase() -> void:
@@ -5409,7 +5418,10 @@ func _move_cards(
 	move_context.equipment_before = context_equipment_before
 	move_context.equipment_after = owner.all_equipment()
 	move_context.excluded_lost = excluded_lost
-	_add_log("%s 的%s%s。" % [owner.player_name, _card_list_text(moved), _move_tail_text(move_context)])
+	var move_tail: String = _move_tail_text(move_context)
+	if dest_player != null and dest_player != owner and to_zone == CardZone.HAND:
+		move_tail += "，交给 %s" % dest_player.player_name
+	_add_log("%s 的%s%s。" % [owner.player_name, _card_list_text(moved), move_tail])
 	_emit_state()
 	_enqueue_card_move_triggers(move_context, continuation)
 
