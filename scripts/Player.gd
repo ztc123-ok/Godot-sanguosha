@@ -1,6 +1,6 @@
-class_name BattlePlayer
+﻿class_name BattlePlayer
 extends Node
-## 玩家领域对象：只负责体力、手牌和回合内标记，不直接控制流程。
+## 玩家领域对象：只负责武将资料、体力、手牌和回合内标记，不直接控制流程。
 
 const EquipmentScript = preload("res://scripts/cards/equipment/Equipment.gd")
 
@@ -17,6 +17,7 @@ signal general_changed
 var general_id: StringName = &""
 var general_name: String = "未选将"
 var kingdom: String = ""
+var gender: int = GeneralDefinition.Gender.MALE
 var skills: Array[Skill] = []
 var turn_skill_usage: Dictionary = {}
 var match_skill_usage: Dictionary = {}
@@ -82,6 +83,7 @@ func assign_general(definition: GeneralDefinition) -> void:
 	general_id = definition.id
 	general_name = definition.display_name
 	kingdom = definition.kingdom
+	gender = definition.gender
 	max_hp = definition.max_hp
 	hp = max_hp
 	skills.clear()
@@ -100,6 +102,7 @@ func clear_general() -> void:
 	general_id = &""
 	general_name = "未选将"
 	kingdom = ""
+	gender = GeneralDefinition.Gender.MALE
 	skills.clear()
 	turn_skill_usage.clear()
 	match_skill_usage.clear()
@@ -226,9 +229,10 @@ func has_delayed_trick(card_type: Card.CardType) -> bool:
 
 
 func add_delayed_trick(card: Card) -> bool:
-	if has_delayed_trick(card.card_type):
+	var slot_type: Card.CardType = card.rule_card_type()
+	if has_delayed_trick(slot_type):
 		return false
-	match card.card_type:
+	match slot_type:
 		Card.CardType.INDULGENCE:
 			indulgence_card = card
 		Card.CardType.SUPPLY_SHORTAGE:

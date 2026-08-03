@@ -28,7 +28,7 @@ func _ready() -> void:
 	_test_generation_reset()
 	game._action_generation += 1
 	if failures.is_empty():
-		print("SECOND_BATCH_SKILL_SMOKE_TEST: PASS (9 additional standard generals; 18 total)")
+		print("SECOND_BATCH_SKILL_SMOKE_TEST: PASS (9 additional standard generals; 25 total)")
 		get_tree().quit(0)
 	else:
 		for failure: String in failures:
@@ -39,7 +39,8 @@ func _ready() -> void:
 func _test_factory_and_metadata() -> void:
 	var ids: Array[StringName] = GeneralFactory.all_general_ids()
 	var unique: Dictionary = {}
-	_expect(ids.size() == 18, "GeneralFactory 创建18名武将")
+	## 第三批新增 7 名标准武将后总数为 25；该断言随扩展后的总池更新。
+	_expect(ids.size() == 25, "GeneralFactory 创建25名武将")
 	for general_id: StringName in ids:
 		_expect(not unique.has(general_id), "武将id唯一：%s" % general_id)
 		unique[general_id] = true
@@ -139,7 +140,24 @@ func _test_ganglie() -> void:
 	game.request_confirm_skill()
 	_expect(game.flow_state == GameManager.FlowState.CHOOSING_OPTION and game.choice_owner == p2, "非红桃刚烈由伤害来源选择")
 	game.request_option(0)
+	_expect(game.flow_state == GameManager.FlowState.SKILL_SELECT_CARDS and game.skill_actor == p2, "刚烈弃牌进入选择两张手牌")
+	game.request_skill_toggle_hand_card(0)
+	game.request_skill_toggle_hand_card(1)
+	game.request_confirm_skill_cards()
 	_expect(p2.hand.is_empty() and h1 in game.discard_pile and h2 in game.discard_pile, "刚烈可弃置两张手牌")
+	## 伤害来源可以自行选择弃哪两张，未选中的保留
+	_prepare(&"xiahoudun", &"liubei", 1)
+	p2.is_ai = false
+	var keep := WineCard.new()
+	_set_hand(p2, [h1, keep, h2]); _set_hand(p1, [])
+	_set_draw_top_first([non_heart])
+	game._start_damage(p2, p1, 1, GameManager.DamageNature.NORMAL, Callable(), null, null, "刚烈选牌")
+	game.request_confirm_skill()
+	game.request_option(0)
+	game.request_skill_toggle_hand_card(0)
+	game.request_skill_toggle_hand_card(2)
+	game.request_confirm_skill_cards()
+	_expect(h1 in game.discard_pile and h2 in game.discard_pile and keep in p2.hand and p2.hand.size() == 1, "刚烈弃牌由来源选择弃哪两张")
 	_prepare(&"xiahoudun", &"liubei", 1)
 	p2.is_ai = false; _set_hand(p2, [])
 	var club := SlashCard.new(); club.suit = Card.Suit.CLUB
@@ -155,6 +173,42 @@ func _test_ganglie() -> void:
 	game._start_damage(p2, p1, 1, GameManager.DamageNature.NORMAL, Callable(), null, null, "刚烈红桃")
 	game.request_confirm_skill()
 	_expect(p2.hand.size() == 2 and p2.hp == 4, "刚烈红桃无后续惩罚")
+	## AI 作为伤害来源时的刚烈选择：手牌充足优先弃两张低价值牌保体力，保留桃
+	_prepare(&"xiahoudun", &"liubei", 1)
+	p2.hp = 4; _set_hand(p2, [SlashCard.new(), DodgeCard.new(), PeachCard.new()]); _set_hand(p1, [])
+	_set_draw_top_first([non_heart])
+	game._start_damage(p2, p1, 1, GameManager.DamageNature.NORMAL, Callable(), null, null, "刚烈AI弃牌")
+	game.request_confirm_skill()
+	_expect(p2.hp == 4 and p2.hand.size() == 1 and p2.hand[0].card_type == Card.CardType.PEACH, "AI 手牌充足时弃两张低价值牌保体力且保留桃")
+	## 杀+桃：弃牌会失去桃，AI 选择受伤保留桃
+	_prepare(&"xiahoudun", &"liubei", 1)
+	p2.hp = 4; _set_hand(p2, [SlashCard.new(), PeachCard.new()]); _set_hand(p1, [])
+	_set_draw_top_first([non_heart])
+	game._start_damage(p2, p1, 1, GameManager.DamageNature.NORMAL, Callable(), null, null, "刚烈AI杀桃")
+	game.request_confirm_skill()
+	_expect(p2.hp == 3 and p2.hand.size() == 2, "AI 杀+桃时选择受伤保留桃")
+	## 杀+闪：弃牌不触及关键牌，弃两张手牌保体力
+	_prepare(&"xiahoudun", &"liubei", 1)
+	p2.hp = 4; _set_hand(p2, [SlashCard.new(), DodgeCard.new()]); _set_hand(p1, [])
+	_set_draw_top_first([non_heart])
+	game._start_damage(p2, p1, 1, GameManager.DamageNature.NORMAL, Callable(), null, null, "刚烈AI杀闪")
+	game.request_confirm_skill()
+	_expect(p2.hp == 4 and p2.hand.is_empty(), "AI 杀+闪时弃两张手牌保体力")
+	## 恰好两张高价值牌时 AI 选择受伤保留好牌（血量健康时）
+	_prepare(&"xiahoudun", &"liubei", 1)
+	p2.hp = 4; _set_hand(p2, [PeachCard.new(), PeachCard.new()]); _set_hand(p1, [])
+	_set_draw_top_first([non_heart])
+	game._start_damage(p2, p1, 1, GameManager.DamageNature.NORMAL, Callable(), null, null, "刚烈AI保桃")
+	game.request_confirm_skill()
+	_expect(p2.hp == 3 and p2.hand.size() == 2, "AI 双高价值桃时选择受伤保留手牌")
+	## 双桃且血量低（受伤会濒死）时：AI 受伤后用桃自救，而不是弃两张桃
+	_prepare(&"xiahoudun", &"liubei", 1)
+	p2.hp = 1; _set_hand(p2, [PeachCard.new(), PeachCard.new()]); _set_hand(p1, [])
+	_set_draw_top_first([non_heart])
+	game._start_damage(p2, p1, 1, GameManager.DamageNature.NORMAL, Callable(), null, null, "刚烈AI自救")
+	game.request_confirm_skill()
+	game._perform_ai_rescue()
+	_expect(p2.hp == 1 and p2.hand.size() == 1, "AI 双桃低血量时受伤后用桃自救并保留一张桃")
 
 
 func _test_yiji() -> void:

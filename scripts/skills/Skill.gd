@@ -1,4 +1,4 @@
-class_name Skill
+﻿class_name Skill
 extends RefCounted
 ## 技能领域基类。技能只声明规则、修正参数或产生结构化请求，不直接改领域状态。
 
@@ -114,7 +114,7 @@ func can_trigger(_event_context: RefCounted, _game: Node, _owner: Node) -> bool:
 	return false
 
 
-## 同一个事件应生成的触发次数。通常为一次；遗计按伤害点数返回多次。
+## 同一个事件应生成的触发次数。通常为一次；遗计按伤害点数、枭姬按失去装备数返回多次。
 func trigger_repeat_count(_event_context: RefCounted, _game: Node, _owner: Node) -> int:
 	return 1
 
@@ -152,6 +152,21 @@ func allows_equipment_cost() -> bool:
 	return true
 
 
+## 主动技（结姻、青囊、离间等）是否需要再选择角色目标。
+func requires_target() -> bool:
+	return false
+
+
+## 主动技目标合法性：目标、已选代价与技能条件一起校验。
+func validate_target(_target: Node, _cards: Array[Card], _game: Node, _owner: Node) -> bool:
+	return false
+
+
+## 主动技是否允许以技能拥有者自身为目标（青囊）。
+func allows_self_target() -> bool:
+	return false
+
+
 ## 视为技默认可使用手牌和装备；倾国会关闭装备区入口。
 func allows_view_as_equipment() -> bool:
 	return true
@@ -165,6 +180,11 @@ func can_be_targeted_by(
 	_owner: Node
 ) -> bool:
 	return true
+
+
+## 使用锦囊时是否完全忽略距离限制（奇才）。
+func ignores_trick_distance(_effective_type: Card.CardType, _game: Node, _owner: Node) -> bool:
+	return false
 
 
 func can_view_as(

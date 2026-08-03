@@ -118,17 +118,19 @@ func refresh() -> void:
 	deck_label.text = "牌堆 %d  ·  弃牌 %d" % [game.draw_pile.size(), game.discard_pile.size()]
 	prompt_label.text = game.prompt_text()
 
-	player_name.text = "%s · %s · %s【%s】" % [
+	player_name.text = "%s · %s · %s【%s】%s" % [
 		human.player_name,
 		human.role_name,
 		human.kingdom if not human.kingdom.is_empty() else "未定",
 		human.general_name,
+		"（男）" if human.gender == GeneralDefinition.Gender.MALE else "（女）",
 	]
-	opponent_name.text = "%s · %s · %s【%s】（AI）" % [
+	opponent_name.text = "%s · %s · %s【%s】%s（AI）" % [
 		ai.player_name,
 		ai.role_name,
 		ai.kingdom if not ai.kingdom.is_empty() else "未定",
 		ai.general_name,
+		"（男）" if ai.gender == GeneralDefinition.Gender.MALE else "（女）",
 	]
 	_update_hp(player_hp, player_hp_text, human)
 	_update_hp(opponent_hp, opponent_hp_text, ai)
@@ -323,20 +325,28 @@ func _update_actions(human: BattlePlayer) -> void:
 
 	var rescuing := (
 		game.flow_state == GameManager.FlowState.DYING_RESCUE
-		and game.dying_player == human
+		and game.rescue_actor == human
 	)
 	peach_button.visible = rescuing
 	wine_button.visible = rescuing
 	give_up_button.visible = rescuing
 	peach_button.disabled = human.find_card(Card.CardType.PEACH) < 0
-	wine_button.disabled = human.find_card(Card.CardType.WINE) < 0
+	wine_button.disabled = (
+		game.dying_player != human or human.find_card(Card.CardType.WINE) < 0
+	)
+	## 救援操作者不是濒死者本人时，酒按钮禁用；急救由技能按钮提供。
 
 	restart_button.visible = game.flow_state == GameManager.FlowState.GAME_OVER
 	reselect_button.visible = game.flow_state == GameManager.FlowState.GAME_OVER
 
 	if game.flow_state == GameManager.FlowState.SKILL_CONFIRM and game.skill_actor == human:
 		skill_confirm_button.visible = true
-		skill_confirm_button.text = "发动【%s】" % game.pending_skill.display_name
+		if game.pending_skill.id == &"tieqi":
+			skill_confirm_button.text = "发动判定"
+		elif game.pending_skill.activation_mode == Skill.ActivationMode.TRIGGERED:
+			skill_confirm_button.text = "发动"
+		else:
+			skill_confirm_button.text = "发动【%s】" % game.pending_skill.display_name
 		skill_decline_button.visible = true
 		skill_decline_button.text = "不发动"
 	if game.flow_state == GameManager.FlowState.JUDGEMENT_REPLACE and game.skill_actor == human:
@@ -362,29 +372,39 @@ func _update_actions(human: BattlePlayer) -> void:
 
 	if game.flow_state == GameManager.FlowState.SKILL_SELECT_CARDS and game.skill_actor == human:
 		skill_cancel_button.visible = true
-		skill_cancel_button.text = "取消技能"
+		skill_cancel_button.text = "取消弃牌" if game._ganglie_discard_active else "取消技能"
+		var ganglie_discarding: bool = game._ganglie_discard_active
 		skill_cards_confirm_button.visible = (
 			game.pending_skill.activation_mode == Skill.ActivationMode.ACTIVE
+			or ganglie_discarding
 		)
-		skill_cards_confirm_button.text = "确认技能代价"
-		skill_cards_confirm_button.disabled = game.pending_skill_cards.is_empty()
+		skill_cards_confirm_button.text = "确认弃置两张" if ganglie_discarding else "确认技能代价"
+		skill_cards_confirm_button.disabled = (
+			game.pending_skill_cards.size() != 2
+			if ganglie_discarding
+			else game.pending_skill_cards.is_empty()
+		)
 		_update_skill_equipment_buttons(human)
 
 	if game.flow_state == GameManager.FlowState.SKILL_SELECT_TARGET and game.skill_actor == human:
 		skill_cancel_button.visible = true
 
-	if game.flow_state not in [
-		GameManager.FlowState.GENERAL_SELECTION,
-		GameManager.FlowState.GAME_OVER,
-		GameManager.FlowState.SKILL_CONFIRM,
-		GameManager.FlowState.SKILL_SELECT_CARDS,
-		GameManager.FlowState.SKILL_SELECT_TARGET,
-		GameManager.FlowState.SKILL_RESOLVING,
-		GameManager.FlowState.JUDGEMENT_REPLACE,
-		GameManager.FlowState.DECK_REORDER,
-		GameManager.FlowState.SKILL_ASSIGN_CARDS,
-		GameManager.FlowState.CHOOSING_SUIT,
-	]:
+	var skill_button_visible := (
+		game.flow_state not in [
+			GameManager.FlowState.GENERAL_SELECTION,
+			GameManager.FlowState.GAME_OVER,
+			GameManager.FlowState.SKILL_CONFIRM,
+			GameManager.FlowState.SKILL_SELECT_CARDS,
+			GameManager.FlowState.SKILL_SELECT_TARGET,
+			GameManager.FlowState.SKILL_RESOLVING,
+			GameManager.FlowState.JUDGEMENT_REPLACE,
+			GameManager.FlowState.DECK_REORDER,
+			GameManager.FlowState.SKILL_ASSIGN_CARDS,
+			GameManager.FlowState.CHOOSING_SUIT,
+		]
+		or game.flow_state == GameManager.FlowState.DYING_RESCUE
+	)
+	if skill_button_visible:
 		for index: int in mini(human.skills.size(), skill_buttons.size()):
 			var skill: Skill = human.skills[index]
 			if skill.activation_mode not in [Skill.ActivationMode.ACTIVE, Skill.ActivationMode.VIEW_AS]:
@@ -747,8 +767,9 @@ func _build_general_selection_panel() -> void:
 		button.add_theme_font_size_override("font_size", 16)
 		button.add_theme_color_override("font_color", Color(0.97, 0.93, 0.82))
 		button.add_theme_color_override("font_hover_color", Color(1.0, 0.86, 0.5))
-		button.text = "%s · %s · %d体力\n%s" % [
+		button.text = "%s · %s · %s · %d体力\n%s" % [
 			definition.display_name,
+			definition.gender_text(),
 			definition.kingdom,
 			definition.max_hp,
 			" ".join(skill_names),
@@ -802,6 +823,10 @@ func _update_general_panel() -> void:
 
 
 func _update_skill_equipment_buttons(player: BattlePlayer) -> void:
+	if game._ganglie_discard_active:
+		for button: Button in skill_equipment_buttons:
+			button.visible = false
+		return
 	var equipment: Array[Card] = player.all_equipment()
 	var visible_index: int = 0
 	for card: Card in equipment:

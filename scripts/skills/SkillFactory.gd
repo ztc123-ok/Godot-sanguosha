@@ -1,4 +1,4 @@
-class_name SkillFactory
+﻿class_name SkillFactory
 extends RefCounted
 ## 技能对象工厂。GameManager 不按武将名硬编码技能。
 
@@ -25,6 +25,20 @@ const KejiScript = preload("res://scripts/skills/generals/KejiSkill.gd")
 const KurouScript = preload("res://scripts/skills/generals/KurouSkill.gd")
 const YingziScript = preload("res://scripts/skills/generals/YingziSkill.gd")
 const FanjianScript = preload("res://scripts/skills/generals/FanjianSkill.gd")
+const MashuScript = preload("res://scripts/skills/generals/MashuSkill.gd")
+const TieqiScript = preload("res://scripts/skills/generals/TieqiSkill.gd")
+const JizhiScript = preload("res://scripts/skills/generals/JizhiSkill.gd")
+const QicaiScript = preload("res://scripts/skills/generals/QicaiSkill.gd")
+const GuoseScript = preload("res://scripts/skills/generals/GuoseSkill.gd")
+const LiuliScript = preload("res://scripts/skills/generals/LiuliSkill.gd")
+const QianxunScript = preload("res://scripts/skills/generals/QianxunSkill.gd")
+const LianyingScript = preload("res://scripts/skills/generals/LianyingSkill.gd")
+const JieyinScript = preload("res://scripts/skills/generals/JieyinSkill.gd")
+const XiaojiScript = preload("res://scripts/skills/generals/XiaojiSkill.gd")
+const JijiuScript = preload("res://scripts/skills/generals/JijiuSkill.gd")
+const QingnangScript = preload("res://scripts/skills/generals/QingnangSkill.gd")
+const LijianScript = preload("res://scripts/skills/generals/LijianSkill.gd")
+const BiyueScript = preload("res://scripts/skills/generals/BiyueSkill.gd")
 
 
 static func create_skill(skill_id: StringName) -> Skill:
@@ -61,4 +75,18 @@ static func create_skill(skill_id: StringName) -> Skill:
 		&"kurou": return KurouScript.new()
 		&"yingzi": return YingziScript.new()
 		&"fanjian": return FanjianScript.new()
+		&"mashu": return MashuScript.new()
+		&"tieqi": return TieqiScript.new()
+		&"jizhi": return JizhiScript.new()
+		&"qicai": return QicaiScript.new()
+		&"guose": return GuoseScript.new()
+		&"liuli": return LiuliScript.new()
+		&"qianxun": return QianxunScript.new()
+		&"lianying": return LianyingScript.new()
+		&"jieyin": return JieyinScript.new()
+		&"xiaoji": return XiaojiScript.new()
+		&"jijiu": return JijiuScript.new()
+		&"qingnang": return QingnangScript.new()
+		&"lijian": return LijianScript.new()
+		&"biyue": return BiyueScript.new()
 	return null

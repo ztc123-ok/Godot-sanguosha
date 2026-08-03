@@ -1,6 +1,6 @@
 # 三国杀·二人完整卡牌版
 
-Godot 4.6 正式版、纯 GDScript 4.x。玩家控制主公 Player1，基础 AI 控制反贼 Player2。对局开始前可从九名武将中选将，双方身份与武将资料互相独立。
+Godot 4.6 正式版、纯 GDScript 4.x。玩家控制主公 Player1，基础 AI 控制反贼 Player2。对局开始前可从 25 名标准版武将中选将，双方身份、武将资料与性别数据互相独立。
 
 ## 运行
 
@@ -26,6 +26,11 @@ Godot 4.6 正式版、纯 GDScript 4.x。玩家控制主公 Player1，基础 AI 
 - 【制衡】：可连续点击手牌和装备按钮进行多选，确认前不支付代价，可随时取消。
 - 触发技：出现询问时点击“发动”或“不发动”；锁定技满足条件时自动生效。
 - 【无双】：响应栏显示需要的牌数和当前 `已响应/需要` 数量。
+- 【铁骑】：马超使用【杀】后提示“发动判定/不发动”；红判时目标不能使用【闪】或【八卦阵】。
+- 【国色】：大乔先选一张方块手牌或方块装备，再选择目标，进入完整【乐不思蜀】流程。
+- 【结姻】【青囊】：先选代价手牌、再点角色目标，确认前可取消，不支付任何代价。
+- 【急救】：华佗在自己的回合外濒死（或救援对方）时点击【急救】按钮，再点一张红色手牌或红色装备。
+- 【流离】【离间】：严格双人局没有合法目标，按钮自动禁用并说明“双人局无合法目标”。
 
 ## 武将与技能
 
@@ -150,4 +155,25 @@ Godot_v4.6-stable_win64_console.exe --headless --path . res://tests/PrologueSmok
 Godot_v4.6-stable_win64_console.exe --headless --path . res://tests/SecondBatchSkillSmokeTest.tscn
 ```
 
-成功输出：`SECOND_BATCH_SKILL_SMOKE_TEST: PASS (9 additional standard generals; 18 total)`。
+成功输出：`SECOND_BATCH_SKILL_SMOKE_TEST: PASS (9 additional standard generals; 25 total)`。
+
+## 第三批标准武将（25 将版本）
+
+战斗选将现扩展为 25 名武将。第三批新增：马超（马术、铁骑）、黄月英（集智、奇才）、大乔（国色、流离）、陆逊（谦逊、连营）、孙尚香（结姻、枭姬）、华佗（急救、青囊）、貂蝉（离间、闭月）。
+
+新增通用规则能力：
+
+- 武将性别：`GeneralDefinition.gender`（MALE/FEMALE）；女性为甄姬、黄月英、大乔、孙尚香、貂蝉。【结姻】【离间】只读取性别字段。
+- 统一牌移动事件 `CardMoveContext`：使用、打出、弃置、获得、交给、偷取、拆除、装备替换和技能代价全部走 `GameManager._move_cards` 原子入口；一次移动多张牌先整体完成，再触发移动后事件。
+- 失去最后手牌：一次原子移动令手牌从有到无，只产生一次“失去所有手牌”事件，供【连营】触发；已经空手时无牌移动不触发。
+- 失去装备：每张离开装备区的实体牌产生一次“失去装备”事件，【枭姬】【白银狮子】进入 TriggerQueue 串行结算。
+- 他人救援：`DYING_RESCUE` 扩展为当前 `rescue_actor` 逐张救援；濒死者先自救，不足 1 再询问另一方；【酒】只能自救，【桃】与华佗【急救】可救他人。
+- 目标转移：`SlashTargetContext` 记录【杀】来源/原目标/当前目标等；【流离】先验证新目标合法再转移，不重新支付【杀】。
+
+新增确定性回归命令：
+
+```powershell
+Godot_v4.6-stable_win64_console.exe --headless --path . res://tests/ThirdBatchSkillSmokeTest.tscn
+```
+
+成功输出：`THIRD_BATCH_SKILL_SMOKE_TEST: PASS (7 remaining standard generals; 25 total)`。

@@ -62,6 +62,9 @@ enum TargetMode {
 }
 
 var card_type: CardType
+## 实体牌被技能改写为另一有效牌类型时（如国色将方块牌当乐不思蜀），
+## 规则上按此类型结算；未设置时为 -1，使用原始 card_type。
+var effective_card_type: int = -1
 var display_name: String
 var description: String
 var accent_color: Color
@@ -104,6 +107,16 @@ func can_use_as_response(_game: Node, _user: Node) -> bool:
 
 func can_use_while_dying(_game: Node, _user: Node) -> bool:
 	return false
+
+
+func rule_card_type() -> CardType:
+	return effective_card_type if effective_card_type >= 0 else card_type
+
+
+func rule_display_name() -> String:
+	if effective_card_type >= 0:
+		return CardFactory.create_card(rule_card_type()).display_name
+	return display_name
 
 
 func is_trick() -> bool:

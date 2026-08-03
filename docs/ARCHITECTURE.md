@@ -141,6 +141,51 @@ GameManager 在同一时机先构造 `TriggerEntry` 队列，再逐项重验拥�
 
 ## 第二批测试
 
-`tests/SecondBatchSkillSmokeTest.tscn` 确定性覆盖第二批 9 名武将、18 将工厂、统一判定、串行触发、私有牌、失去体力、AI、无双/八卦/丈八组合与 generation 清理。成功标志为：
+`tests/SecondBatchSkillSmokeTest.tscn` 确定性覆盖第二批 9 名武将、25 将工厂、统一判定、串行触发、私有牌、失去体力、AI、无双/八卦/丈八组合与 generation 清理。成功标志为：
 
-`SECOND_BATCH_SKILL_SMOKE_TEST: PASS (9 additional standard generals; 18 total)`
+`SECOND_BATCH_SKILL_SMOKE_TEST: PASS (9 additional standard generals; 25 total)`
+
+## 第三批通用规则扩展
+
+### 武将性别
+
+`GeneralDefinition` 新增 `gender`（`MALE`/`FEMALE`），由 `GeneralFactory.gender_of()` 统一维护，`BattlePlayer` 在 `assign_general` 时保存。女性为甄姬、黄月英、大乔、孙尚香、貂蝉，其余为男性。性别是规则数据：【结姻】【离间】只读取 `gender` 字段，不按武将中文名或 UI 文本推断。
+
+### CardMoveContext 与统一牌移动
+
+`CardMoveContext` 记录 cards、owner/source、from_zone、to_zone、reason、source_card/source_skill、移动前后手牌数、装备区前后快照与 continuation。`GameManager._move_cards()` 是唯一原子移动入口：
+
+- 使用、打出、弃置、获得、交给、偷取、拆除、装备替换、装备作为技能代价全部汇入。
+- 一次移动多张牌先整体完成，再构造一个 `CardMoveContext` 触发移动后事件，禁止逐张修改中途状态导致重复触发。
+- 装备替换时被替换牌通过 `pre_removed` 由调用方单独结算，避免同一实体装备重复计入。
+
+### 失去最后手牌与失去装备
+
+- 一次原子移动令手牌从大于 0 变为 0 时，产生一次“失去所有手牌”事件（`CardMoveContext.lost_all_hand_cards()`），【连营】最多触发一次；已经空手时的无牌移动不触发；连营摸牌后再次空手可再次触发。
+- 每张离开装备区的实体牌产生一次“失去装备”事件（`lost_equipment_cards()`），【枭姬】按失去张数生成触发项，【白银狮子】离场回复也作为内置触发项进入同一 TriggerQueue 串行结算。同一实体装备不能重复触发。
+
+### SlashTargetContext 与目标转移
+
+`SlashTargetContext` 记录【杀】来源、当前目标、原目标、伤害、属性、实体牌、有效牌类型、护甲忽略与 continuation。`_start_slash_response` 在进入闪响应前将 `slash_targeted` 触发队列交给来源与目标：【铁骑】在此时判定并设置 `_slash_dodge_forbidden`（红判禁止实体闪、倾国与八卦阵）；【流离】在此时检查合法转移目标（先验证新目标在流离者攻击范围内且为该杀来源的合法目标，再取消原目标并建立新目标，不重新支付【杀】、不重复计出杀次数、不生成第二张实体牌）。
+
+### DyingRescueContext 与他人救援
+
+`DYING_RESCUE` 扩展为“当前救援操作者”模型：`rescue_actor` 先为濒死者（可自救【桃】【酒】及回合外华佗【急救】），明确放弃且仍不足 1 体力后切换到另一方（可使用【桃】及回合外【急救】，不能使用【酒】）。每次只提交一张实体/虚拟【桃】，结算后通过 `_check_rescue_state` 重新检查体力；无可用救援牌时自动跳过并进入下一救援者或死亡。授权读取 `rescue_actor`，不用“当前回合是否属于 AI”拦截。
+
+### 规则修正与状态
+
+- 【马术】经 `modify_distance` 与坐骑同一管线叠加，全部修正后 `max(1, distance)`；只影响马超作为来源的距离。
+- 【奇才】经 `ignores_trick_distance` 跳过顺手牵羊/借刀的 1 距离限制，其余目标限制保留。
+- 【谦逊】在 `_skills_allow_target` 规则层拒绝【顺手牵羊】与【乐不思蜀】（含国色虚拟乐不思蜀）。
+- 国色把方块牌的 `effective_card_type` 改写为 `INDULGENCE`：真实代价牌仍作为判定区实体牌，按【乐不思蜀】的槽位、判定与弃置流程结算，不复制牌。
+- 新增 `FlowState.SLASH_TRANSFER`；`SKILL_SELECT_CARDS`/`SKILL_SELECT_TARGET` 覆盖国色、流离、结姻、青囊、离间的代价与目标选择；主动技目标选择通过 `requires_target()`/`validate_target()`/`allows_self_target()` 钩子进入既有流程。
+
+### 双人局裁定
+
+【流离】在严格双人局没有合法转移目标（来源不能成为自己【杀】的目标），按钮隐藏/禁用、AI 不尝试、不弃牌；【离间】因不足两名男性角色不可发动、不生成【决斗】。两者保留完整技能脚本与 can_* 合法性检查。
+
+## 第三批测试
+
+`tests/ThirdBatchSkillSmokeTest.tscn` 确定性覆盖第三批 7 名武将、25 将工厂、性别、马术/铁骑（含鬼才/天妒改判）、奇才/集智、国色/流离、谦逊/连营、结姻/枭姬（含白银狮子队列）、急救/青囊、离间/闭月、他人救援、组合回归与 generation 清理。成功标志为：
+
+`THIRD_BATCH_SKILL_SMOKE_TEST: PASS (7 remaining standard generals; 25 total)`
