@@ -272,11 +272,12 @@ func _test_rende() -> void:
 	_prepare(&"liubei", &"xiahoudun")
 	p1.hp = 3; p1.hp_changed.emit(p1.hp, p1.max_hp)
 	var a := SlashCard.new(); var b := DodgeCard.new(); _set_hand(p1, [a, b]); _set_hand(p2, [])
-	game.request_begin_skill(&"rende"); game.request_skill_toggle_hand_card(0); game.request_confirm_skill_cards()
-	game.request_begin_skill(&"rende"); game.request_skill_toggle_hand_card(0); game.request_confirm_skill_cards()
+	## 多人化后仁德需要先选择接收者（此处固定选 Player2）。
+	game.request_begin_skill(&"rende"); game.request_skill_toggle_hand_card(0); game.request_confirm_skill_cards(); game.request_skill_target(1)
+	game.request_begin_skill(&"rende"); game.request_skill_toggle_hand_card(0); game.request_confirm_skill_cards(); game.request_skill_target(1)
 	_expect(p2.hand.size() == 2 and p1.hp == 4 and p1.rende_recovery_consumed, "仁德可多次交牌且累计两张仅回复一次")
 	var c := PeachCard.new(); p1.add_card(c); p1.hp = 3
-	game.request_begin_skill(&"rende"); game.request_skill_toggle_hand_card(0); game.request_confirm_skill_cards()
+	game.request_begin_skill(&"rende"); game.request_skill_toggle_hand_card(0); game.request_confirm_skill_cards(); game.request_skill_target(1)
 	_expect(p1.hp == 3, "仁德回复机会消耗后本阶段不再次回复")
 	var retained := WineCard.new(); p1.add_card(retained)
 	game.request_begin_skill(&"rende"); game.request_skill_toggle_hand_card(0); game.request_cancel_skill()
@@ -354,6 +355,7 @@ func _test_yingzi_and_fanjian() -> void:
 	var spade := SlashCard.new(); spade.suit = Card.Suit.SPADE
 	_set_hand(p1, [spade]); _set_hand(p2, [])
 	game.request_begin_skill(&"fanjian")
+	game.request_skill_target(1)
 	_expect(game.flow_state == GameManager.FlowState.CHOOSING_SUIT and p1.hand.size() == 1, "反间先选花色且未提前移动或公开牌")
 	game.request_choose_suit(0)
 	_expect(spade in p2.hand and p2.hp == 4, "反间花色相同：目标获得牌且无伤害")
@@ -362,7 +364,7 @@ func _test_yingzi_and_fanjian() -> void:
 	p2.is_ai = false
 	var heart := PeachCard.new(); heart.suit = Card.Suit.HEART
 	_set_hand(p1, [heart]); _set_hand(p2, [])
-	game.request_begin_skill(&"fanjian"); game.request_choose_suit(0)
+	game.request_begin_skill(&"fanjian"); game.request_skill_target(1); game.request_choose_suit(0)
 	_expect(heart in p2.hand and p2.hp == 3, "反间花色不同：先移动牌再经过统一伤害流程")
 
 

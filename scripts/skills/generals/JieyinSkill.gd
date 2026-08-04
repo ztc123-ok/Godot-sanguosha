@@ -16,7 +16,11 @@ func _init() -> void:
 func can_activate(game: Node, owner: Node) -> bool:
 	if not game.is_play_phase_for(owner) or owner.hand.size() < 2:
 		return false
-	return _target_valid(game.other_player(owner), owner)
+	## 多人局：任意一名合法对手满足条件即可发动，不再只看默认对手。
+	for target: Node in game._potential_targets_for(owner):
+		if _target_valid(target, owner):
+			return true
+	return false
 
 func _target_valid(target: Node, owner: Node) -> bool:
 	if target == null or target == owner:

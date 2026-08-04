@@ -5,7 +5,7 @@ extends PanelContainer
 signal card_dropped(hand_index: int, target_index: int)
 signal target_clicked(target_index: int)
 
-@export_range(0, 1, 1) var player_index: int = 0
+@export_range(0, 9, 1) var player_index: int = 0
 
 
 func _ready() -> void:

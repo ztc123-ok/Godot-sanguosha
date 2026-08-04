@@ -27,7 +27,11 @@ func can_activate(game: Node, owner: Node) -> bool:
 func requires_target() -> bool: return true
 
 func validate_target(_target: Node, _cards: Array[Card], _game: Node, _owner: Node) -> bool:
-	return false
+	## 单目标校验：男性且非使用者本人即可；两名目标的组合选择由 GameManager 分两步处理。
+	if _target == null or _target == _owner:
+		return false
+	var player: BattlePlayer = _target as BattlePlayer
+	return player.gender == GeneralDefinition.Gender.MALE and not player.is_dying()
 
 func validate_cost(cards: Array[Card], _game: Node, owner: Node) -> bool:
 	if cards.size() != 1:

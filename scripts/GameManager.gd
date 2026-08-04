@@ -3,6 +3,16 @@ extends Node
 ## 双人局唯一规则入口。
 ## 所有主动牌、响应牌、锦囊、判定、伤害和濒死均经过本状态机结算。
 
+## 各序章关卡的敌人数量配置；关卡差异集中在此，避免散落到卡牌规则中。
+const BATTLE_CONFIGS := {
+	1: {
+		"enemy_count": 1,
+	},
+	2: {
+		"enemy_count": 2,
+	},
+}
+
 const EquipmentScript = preload("res://scripts/cards/equipment/Equipment.gd")
 const JudgementContextScript = preload("res://scripts/skills/JudgementContext.gd")
 const TriggerEntryScript = preload("res://scripts/skills/TriggerEntry.gd")
@@ -13,6 +23,8 @@ const SilverLionLeaveScript = preload("res://scripts/skills/generals/SilverLionL
 signal state_changed
 signal log_added(message: String)
 signal match_finished(winner: BattlePlayer, loser: BattlePlayer)
+## 多人敌方战斗的统一胜负信号：true 表示玩家获胜，false 表示玩家失败。
+signal battle_finished(player_won: bool)
 
 enum Phase {
 	START,
@@ -76,6 +88,8 @@ enum CardZone {
 @onready var player2: BattlePlayer = $Players/Player2
 
 var players: Array[BattlePlayer] = []
+## AI 反贼集合：通过数组遍历，核心流程不依赖 enemy1/enemy2 分支。
+var enemies: Array[BattlePlayer] = []
 var draw_pile: Array[Card] = []
 var discard_pile: Array[Card] = []
 ## 已支付但尚未完成整条效果的实体牌。效果完成后统一进入弃牌堆，
@@ -137,6 +151,10 @@ var _async_skill_continue: Callable = Callable()
 var _fanjian_selected_suit: Card.Suit = Card.Suit.SPADE
 var _fanjian_source: BattlePlayer
 var _fanjian_target: BattlePlayer
+## 【离间】两步选目标：先选决斗发起者，再选决斗对象。
+var _lijian_first_target: BattlePlayer = null
+## 【丈八蛇矛】出牌阶段视为【杀】时等待玩家选目标的缓存：[user, paid_cards]。
+var _pending_serpent_spear: Array = []
 var _luoshen_final_continue: Callable = Callable()
 var _liuli_slash_context: RefCounted
 var _liuli_continue: Callable = Callable()
@@ -199,6 +217,9 @@ var _fire_source: BattlePlayer
 var _fire_target: BattlePlayer
 var _borrow_source: BattlePlayer
 var _borrow_target: BattlePlayer
+## 【借刀杀人】指定出【杀】的目标角色（默认是使用者本人；人类使用时可选）。
+var _borrow_slash_target: BattlePlayer = null
+var _pending_borrow_slash_target: bool = false
 
 ## 五谷丰登选择上下文。
 var _revealed_selecting_player: BattlePlayer
@@ -208,6 +229,8 @@ var _chain_card: Card
 var _chain_source: BattlePlayer
 var _chain_targets: Array[BattlePlayer] = []
 var _chain_index: int = 0
+## 铁索连环的选项缓存（code + label），避免用固定索引写死敌人数。
+var _iron_chain_options_cache: Array[Dictionary] = []
 
 ## 判定阶段上下文。
 var _judgement_queue: Array[Card] = []
@@ -238,7 +261,10 @@ var _pending_ai_action_count: int = 0
 
 
 func _ready() -> void:
-	players = [player1, player2]
+	## 根据当前序章关卡生成敌人阵容，再组合出全员列表。
+	_ensure_enemy_players()
+	players = [player1]
+	players.append_array(enemies)
 	if _automated_boot_requested():
 		## 无头/服务端模式下跳过 UI 选将，直接以默认配置开启纯 AI 对战。
 		automated_mode = true
@@ -246,6 +272,215 @@ func _ready() -> void:
 	else:
 		## 交互模式：维持原有 UI 选将生命周期。
 		call_deferred("begin_general_selection")
+
+
+## 根据 PrologueState.active_battle 生成敌人阵容。
+## 场景固定提供 Player2，多出的敌人按需动态创建，敌人数量可继续扩展。
+func _ensure_enemy_players() -> void:
+	enemies.clear()
+	enemies.append(player2)
+	player2.player_name = "AI 反贼 1"
+	var count: int = enemy_count_for_current_battle()
+	for extra: int in range(2, count + 1):
+		var enemy := BattlePlayer.new()
+		enemy.name = "Player%d" % (extra + 1)
+		enemy.player_name = "AI 反贼 %d" % extra
+		enemy.role_name = "反贼"
+		enemy.is_ai = true
+		$Players.add_child(enemy)
+		enemies.append(enemy)
+
+
+func enemy_count_for_current_battle() -> int:
+	var config: Dictionary = BATTLE_CONFIGS.get(PrologueState.active_battle, {})
+	return int(config.get("enemy_count", 1))
+
+
+## 存活角色集合（含玩家与全部 AI）。
+func living_players() -> Array[BattlePlayer]:
+	var result: Array[BattlePlayer] = []
+	for player: BattlePlayer in players:
+		if not player.is_dying():
+			result.append(player)
+	return result
+
+
+## 存活 AI 反贼集合。
+func living_enemies() -> Array[BattlePlayer]:
+	var result: Array[BattlePlayer] = []
+	for enemy: BattlePlayer in enemies:
+		if not enemy.is_dying():
+			result.append(enemy)
+	return result
+
+
+func first_living_enemy() -> BattlePlayer:
+	for enemy: BattlePlayer in enemies:
+		if not enemy.is_dying():
+			return enemy
+	return null
+
+
+func human_player() -> BattlePlayer:
+	return player1
+
+
+## 从当前角色开始按线性轮转查找下一名存活角色（已死亡角色被跳过）。
+func next_living_player_index(from_index: int = current_player_index) -> int:
+	if players.is_empty():
+		return from_index
+	for offset: int in range(1, players.size() + 1):
+		var candidate: int = (from_index + offset) % players.size()
+		if not players[candidate].is_dying():
+			return candidate
+	return from_index
+
+
+func _next_living_player_after(player: BattlePlayer) -> BattlePlayer:
+	if player == null or players.is_empty():
+		return null
+	var start: int = player_index(player)
+	for offset: int in range(1, players.size() + 1):
+		var candidate: BattlePlayer = players[(start + offset) % players.size()]
+		if not candidate.is_dying():
+			return candidate
+	return null
+
+
+## 濒死救援顺序：濒死者本人先行动，之后按行动顺序逐名存活角色行动。
+func _next_rescue_actor(dying: BattlePlayer) -> BattlePlayer:
+	return _next_living_player_after(dying)
+
+
+## AI 的默认攻击目标：永远只针对玩家，不攻击其他 AI。
+func choose_ai_target(ai: BattlePlayer) -> BattlePlayer:
+	if ai == null or ai.is_dying():
+		return null
+	return player1 if player1 != null and not player1.is_dying() else null
+
+
+## 单人目标的 MVP 兜底：AI 打玩家，玩家打第一个存活反贼。
+func _default_rival(player: BattlePlayer) -> BattlePlayer:
+	if player == null:
+		return null
+	## 以“是否为主公”判断攻防双方，而非 is_ai：测试中敌人可能临时关闭 AI 标记。
+	if player == player1:
+		return first_living_enemy()
+	return player1 if player1 != null and not player1.is_dying() else null
+
+
+## 玩家出牌（或 AI 出牌）时的潜在目标集合。
+func _potential_targets_for(user: BattlePlayer) -> Array[BattlePlayer]:
+	var result: Array[BattlePlayer] = []
+	if user == null:
+		return result
+	if user == player1:
+		return living_enemies()
+	if player1 != null and not player1.is_dying():
+		result.append(player1)
+	return result
+
+
+## 突袭目标：任意一名持有手牌的对手（AI 取玩家，玩家取第一个有手牌的存活反贼）。
+func _steal_target_for(owner: BattlePlayer) -> BattlePlayer:
+	for target: BattlePlayer in _potential_targets_for(owner):
+		if not target.hand.is_empty():
+			return target
+	return null
+
+
+## 除使用者外的全部存活角色（“所有其他角色”类牌的结算顺序按列表顺序）。
+func _other_living_players(source: BattlePlayer) -> Array[BattlePlayer]:
+	var result: Array[BattlePlayer] = []
+	for player: BattlePlayer in living_players():
+		if player != source:
+			result.append(player)
+	return result
+
+
+## 从指定角色开始的行动顺序（包含自身），用于鬼才改判、五谷丰登等顺序结算。
+func _all_living_players_ordered_from(starting_player: BattlePlayer) -> Array[BattlePlayer]:
+	var result: Array[BattlePlayer] = []
+	var start: int = player_index(starting_player)
+	for offset: int in range(players.size()):
+		var candidate: BattlePlayer = players[(start + offset) % players.size()]
+		if not candidate.is_dying() and candidate not in result:
+			result.append(candidate)
+	return result
+
+
+func _any_legal_trick_target(card: Card, user: BattlePlayer) -> bool:
+	for target: BattlePlayer in _potential_targets_for(user):
+		if _is_valid_trick_target(card, user, target):
+			return true
+	return false
+
+
+func _has_any_dismantle_target(user: BattlePlayer) -> bool:
+	for target: BattlePlayer in _potential_targets_for(user):
+		if target.total_cards_in_hand_and_equipment() > 0:
+			return true
+	return false
+
+
+func _has_any_indulgence_target(user: BattlePlayer) -> bool:
+	var virtual_indulgence: Card = CardFactory.create_card(Card.CardType.INDULGENCE)
+	for target: BattlePlayer in _potential_targets_for(user):
+		if _is_valid_trick_target(virtual_indulgence, user, target):
+			return true
+	return false
+
+
+## 响应场景中的“对方”：优先取当前正在交互的对手，退回默认对手。
+func _response_opponent(player: BattlePlayer) -> BattlePlayer:
+	if player == null:
+		return null
+	if flow_state == FlowState.DYING_RESCUE and dying_player != null and dying_player != player:
+		return dying_player
+	if pending_attacker != null and pending_attacker != player:
+		return pending_attacker
+	if _duel_other != null and _duel_other != player:
+		return _duel_other
+	if _global_source != null and _global_source != player:
+		return _global_source
+	if _borrow_slash_target != null and _borrow_slash_target != player:
+		return _borrow_slash_target
+	if _borrow_source != null and _borrow_source != player:
+		return _borrow_source
+	return _default_rival(player)
+
+
+## 出牌阶段使用【杀】（含丈八蛇矛等视为杀的途径）时的默认目标：
+## AI 打玩家，玩家打第一个存活反贼。
+func _default_attack_target(user: BattlePlayer) -> BattlePlayer:
+	if user == null:
+		return null
+	if user == player1:
+		return first_living_enemy()
+	return player1 if player1 != null and not player1.is_dying() else null
+
+
+## 为未配将、武将无效或重复的角色从武将池补选，保证全员武将互不相同。
+func _ensure_distinct_generals() -> void:
+	var used: Array[StringName] = []
+	for player: BattlePlayer in players:
+		if player.general_id != &"" and GeneralFactory.is_valid_id(player.general_id):
+			used.append(player.general_id)
+	for player: BattlePlayer in players:
+		if (
+			player.general_id != &""
+			and GeneralFactory.is_valid_id(player.general_id)
+			and used.count(player.general_id) == 1
+		):
+			continue
+		var pool: Array[StringName] = GeneralFactory.all_general_ids()
+		pool = pool.filter(func(id: StringName) -> bool: return not used.has(id))
+		pool.shuffle()
+		if pool.is_empty():
+			return
+		var pick: StringName = pool[0]
+		player.assign_general(GeneralFactory.create_general(pick))
+		used.append(pick)
 
 
 func _automated_boot_requested() -> bool:
@@ -316,11 +551,12 @@ func _restart_automated_match() -> void:
 
 ## 看门狗激活条件：双方均标记为 AI（与调用方是否开启 automated_mode 无关）。
 func _all_ai() -> bool:
-	return (
-		players.size() == 2
-		and player1 != null and player1.is_ai
-		and player2 != null and player2.is_ai
-	)
+	if players.is_empty():
+		return false
+	for player: BattlePlayer in players:
+		if player == null or not player.is_ai:
+			return false
+	return true
 
 
 func _process(delta: float) -> void:
@@ -402,15 +638,8 @@ func _ai_driver_for_state(state: FlowState) -> StringName:
 
 
 func _auto_start_from_selection() -> void:
-	## 保留测试已注入的合法武将；缺省或非法时回退默认，并保证双方武将不同。
-	if not GeneralFactory.is_valid_id(player1.general_id):
-		player1.assign_general(GeneralFactory.create_general(GeneralFactory.DEFAULT_PLAYER_GENERAL))
-	if not GeneralFactory.is_valid_id(player2.general_id) or player2.general_id == player1.general_id:
-		var candidates: Array[StringName] = GeneralFactory.all_general_ids()
-		candidates.erase(player1.general_id)
-		candidates.shuffle()
-		var p2_id: StringName = candidates[0] if not candidates.is_empty() else GeneralFactory.DEFAULT_AI_GENERAL
-		player2.assign_general(GeneralFactory.create_general(p2_id))
+	## 保留测试已注入的合法武将；缺省、非法或重复时从武将池补选，并保证全员互不相同。
+	_ensure_distinct_generals()
 	start_match()
 
 
@@ -466,8 +695,8 @@ func begin_general_selection(preserve_generals: bool = false) -> void:
 		player.hand.clear()
 		player.hand_changed.emit()
 	if not preserve_generals:
-		player1.clear_general()
-		player2.clear_general()
+		for player: BattlePlayer in players:
+			player.clear_general()
 	_add_log("进入选将阶段：请选择主公武将，反贼将从剩余武将中选择。")
 	_emit_state()
 
@@ -480,9 +709,17 @@ func request_select_general(general_id: StringName) -> void:
 	var candidates: Array[StringName] = GeneralFactory.all_general_ids()
 	candidates.erase(general_id)
 	candidates.shuffle()
-	var ai_id: StringName = candidates[0] if not candidates.is_empty() else GeneralFactory.DEFAULT_AI_GENERAL
-	player2.assign_general(GeneralFactory.create_general(ai_id))
-	_add_log("主公选择【%s】；反贼选择【%s】。" % [player1.general_name, player2.general_name])
+	var ai_names: PackedStringArray = []
+	for enemy: BattlePlayer in enemies:
+		if candidates.is_empty():
+			break
+		var ai_id: StringName = candidates.pop_back()
+		enemy.assign_general(GeneralFactory.create_general(ai_id))
+		ai_names.append(enemy.general_name)
+	_add_log("主公选择【%s】；反贼选择%s。" % [
+		player1.general_name,
+		"、".join(ai_names) if not ai_names.is_empty() else "（武将池不足）",
+	])
 	_emit_state()
 
 
@@ -502,8 +739,13 @@ func setup_generals(player1_general_id: StringName, player2_general_id: StringNa
 func request_start_match() -> void:
 	if flow_state != FlowState.GENERAL_SELECTION:
 		return
-	if player1.general_id == &"" or player2.general_id == &"":
-		_reject("双方武将尚未确定。")
+	var generals_ready: bool = player1.general_id != &""
+	for enemy: BattlePlayer in enemies:
+		if enemy.general_id == &"":
+			generals_ready = false
+			break
+	if not generals_ready:
+		_reject("尚未确定全部武将。")
 		return
 	start_match()
 
@@ -512,7 +754,11 @@ func request_use_default_generals() -> void:
 	if flow_state != FlowState.GENERAL_SELECTION:
 		return
 	setup_generals(GeneralFactory.DEFAULT_PLAYER_GENERAL, GeneralFactory.DEFAULT_AI_GENERAL)
-	_add_log("已载入默认选将：主公【曹操】、反贼【吕布】。")
+	_ensure_distinct_generals()
+	var enemy_text: PackedStringArray = []
+	for enemy: BattlePlayer in enemies:
+		enemy_text.append("【%s】" % enemy.general_name)
+	_add_log("已载入默认选将：主公【曹操】、反贼 %s。" % "、".join(enemy_text))
 	_emit_state()
 
 
@@ -528,10 +774,7 @@ func request_reselect_generals() -> void:
 
 func start_match(begin_first_turn: bool = true) -> void:
 	## 公开且确定性的开局入口；初次运行由选将面板调用。
-	if player1.general_id == &"":
-		player1.assign_general(GeneralFactory.create_general(GeneralFactory.DEFAULT_PLAYER_GENERAL))
-	if player2.general_id == &"" or player2.general_id == player1.general_id:
-		player2.assign_general(GeneralFactory.create_general(GeneralFactory.DEFAULT_AI_GENERAL))
+	_ensure_distinct_generals()
 	_action_generation += 1
 	_reset_transient_contexts()
 	_clear_skill_context()
@@ -554,11 +797,13 @@ func start_match(begin_first_turn: bool = true) -> void:
 			skill.on_general_reset(self, player)
 		draw_cards(player, 4)
 
-	_add_log("游戏开始：主公 %s【%s】 对阵反贼 %s【%s】。" % [
+	var enemy_summary: PackedStringArray = []
+	for enemy: BattlePlayer in enemies:
+		enemy_summary.append("%s【%s】" % [enemy.player_name, enemy.general_name])
+	_add_log("游戏开始：主公 %s【%s】 对阵 %s。" % [
 		player1.player_name,
 		player1.general_name,
-		player2.player_name,
-		player2.general_name,
+		"、".join(enemy_summary),
 	])
 	_add_log("双方各摸 4 张起始手牌，主公先手。")
 	if begin_first_turn:
@@ -606,11 +851,15 @@ func _reset_transient_contexts() -> void:
 	_fire_target = null
 	_borrow_source = null
 	_borrow_target = null
+	_borrow_slash_target = null
+	_pending_borrow_slash_target = false
 	_revealed_selecting_player = null
 	_chain_card = null
 	_chain_source = null
 	_chain_targets.clear()
 	_chain_index = 0
+	_lijian_first_target = null
+	_pending_serpent_spear.clear()
 	_judgement_queue.clear()
 	_judgement_index = 0
 	_judging_card = null
@@ -653,7 +902,9 @@ func current_player() -> BattlePlayer:
 
 
 func other_player(player: BattlePlayer) -> BattlePlayer:
-	return player2 if player == player1 else player1
+	## 兼容旧技能/旧调用方的 1v1 语义；多人局中作为默认对手兜底：
+	## AI 永远针对玩家，玩家针对第一个存活反贼。
+	return _default_rival(player)
 
 
 func two_player_action_order(starting_player: BattlePlayer) -> Array[BattlePlayer]:
@@ -696,6 +947,8 @@ func prompt_text() -> String:
 			pending_skill_cards.size(),
 		]
 	if flow_state == FlowState.SKILL_SELECT_TARGET:
+		if pending_skill != null and pending_skill.id == &"lijian" and _lijian_first_target != null:
+			return "【离间】：已选 %s 为【决斗】使用者，请选择【决斗】对象（男性角色）" % _lijian_first_target.player_name
 		return "%s 发动【%s】：请选择合法目标" % [skill_actor.player_name, pending_skill.display_name]
 	if flow_state == FlowState.SKILL_RESOLVING:
 		return "正在结算技能……" if pending_skill == null else "正在结算【%s】……" % pending_skill.display_name
@@ -708,6 +961,10 @@ func prompt_text() -> String:
 	if flow_state == FlowState.CHOOSING_SUIT:
 		return "%s 正在为【反间】选择花色；随机牌尚未公开。" % choice_owner.player_name
 	if flow_state == FlowState.SELECTING_TARGET:
+		if _pending_borrow_slash_target:
+			return "【借刀杀人】：请选择指定出【杀】的目标角色"
+		if not _pending_serpent_spear.is_empty():
+			return "【丈八蛇矛】视为【杀】：点击或拖拽选择目标"
 		return "已选择【%s】——点击或拖到合法角色区域" % _selected_card_name()
 	if flow_state == FlowState.RESPONDING_SLASH:
 		return "%s 正被【杀】指定：使用【闪】或不响应" % pending_target.player_name
@@ -744,9 +1001,10 @@ func prompt_text() -> String:
 	if flow_state == FlowState.SLASH_TRANSFER:
 		return "%s 发动【流离】：请选择转移目标（必须在你攻击范围内且为该【杀】的合法目标）" % skill_actor.player_name
 	if flow_state == FlowState.BORROW_RESPONSE:
+		var borrow_prompt_target: BattlePlayer = _borrow_slash_target if _borrow_slash_target != null else _borrow_source
 		return "%s：对 %s 使用【杀】，否则交出武器" % [
 			_borrow_target.player_name,
-			_borrow_source.player_name,
+			borrow_prompt_target.player_name,
 		]
 	if flow_state == FlowState.DYING_RESCUE:
 		if rescue_actor == null:
@@ -782,31 +1040,19 @@ func can_play_trick(card: Card, user: Node) -> bool:
 	if not is_play_phase_for(user):
 		return false
 	var owner: BattlePlayer = user as BattlePlayer
-	var target: BattlePlayer = other_player(owner)
 	match card.card_type:
 		Card.CardType.NULLIFICATION:
 			return false
 		Card.CardType.DISMANTLE:
-			return target.total_cards_in_hand_and_equipment() > 0
+			return _has_any_dismantle_target(owner)
 		Card.CardType.STEAL:
-			return (
-				(_trick_distance_free(owner, Card.CardType.STEAL) or distance_between(owner, target) == 1)
-				and not target.hand.is_empty()
-				and _skills_allow_target(owner, target, Card.CardType.STEAL)
-			)
+			return _any_legal_trick_target(card, owner)
 		Card.CardType.BORROW_SWORD:
-			return (
-				(_trick_distance_free(owner, Card.CardType.BORROW_SWORD) or distance_between(owner, target) == 1)
-				and target.weapon != null
-				and can_slash_target(target, owner)
-			)
+			return _any_legal_trick_target(card, owner)
 		Card.CardType.FIRE_ATTACK:
-			return not target.hand.is_empty() or not owner.hand.is_empty()
+			return _any_legal_trick_target(card, owner) or not owner.hand.is_empty()
 		Card.CardType.INDULGENCE, Card.CardType.SUPPLY_SHORTAGE:
-			return (
-				not target.has_delayed_trick(card.card_type)
-				and _skills_allow_target(owner, target, card.card_type)
-			)
+			return _any_legal_trick_target(card, owner)
 		Card.CardType.LIGHTNING:
 			return not owner.has_delayed_trick(Card.CardType.LIGHTNING)
 	return true
@@ -891,10 +1137,12 @@ func can_use_slash_in_play(user: Node) -> bool:
 	if not is_play_phase_for(user):
 		return false
 	var player: BattlePlayer = user as BattlePlayer
-	return (
-		(not player.slash_used_this_turn or slash_use_limit(player) > 1)
-		and can_slash_target(player, other_player(player))
-	)
+	if player.slash_used_this_turn and slash_use_limit(player) <= 1:
+		return false
+	for target: BattlePlayer in _potential_targets_for(player):
+		if can_slash_target(player, target):
+			return true
+	return false
 
 
 func hand_limit_for(player: BattlePlayer) -> int:
@@ -920,15 +1168,10 @@ func can_use_skill(player: BattlePlayer, skill: Skill) -> bool:
 			if is_play_phase_for(player):
 				if effective == Card.CardType.SLASH and not can_use_slash_in_play(player):
 					return false
-				if (
-					effective == Card.CardType.DISMANTLE
-					and other_player(player).total_cards_in_hand_and_equipment() <= 0
-				):
+				if effective == Card.CardType.DISMANTLE and not _has_any_dismantle_target(player):
 					return false
-				if effective == Card.CardType.INDULGENCE:
-					var virtual_indulgence: Card = CardFactory.create_card(Card.CardType.INDULGENCE)
-					if not _is_valid_trick_target(virtual_indulgence, player, other_player(player)):
-						return false
+				if effective == Card.CardType.INDULGENCE and not _has_any_indulgence_target(player):
+					return false
 			return not _view_as_candidates(player, skill, effective).is_empty()
 	return false
 
@@ -1067,12 +1310,23 @@ func request_card_on_target(hand_index: int, target_index: int) -> void:
 	if flow_state == FlowState.SKILL_SELECT_TARGET:
 		request_skill_target(target_index)
 		return
+	if _pending_borrow_slash_target:
+		_resolve_borrow_slash_target(target_index)
+		return
+	if not _pending_serpent_spear.is_empty():
+		_resolve_serpent_spear_target(target_index)
+		return
 	if flow_state == FlowState.GAME_OVER or current_player().is_ai:
 		return
 	if phase != Phase.PLAY or hand_index < 0 or hand_index >= player1.hand.size():
 		return
 	var card: Card = player1.hand[hand_index]
+	if target_index < 0 or target_index >= players.size():
+		return
 	var target: BattlePlayer = players[target_index]
+	if target.is_dying():
+		_reject("该角色已经阵亡。")
+		return
 	if card.card_type == Card.CardType.SLASH:
 		if target == player1:
 			_reject("【杀】必须指定对方。")
@@ -1095,13 +1349,25 @@ func request_target(target_index: int) -> void:
 	if flow_state == FlowState.SKILL_SELECT_TARGET:
 		request_skill_target(target_index)
 		return
+	if _pending_borrow_slash_target:
+		_resolve_borrow_slash_target(target_index)
+		return
+	if not _pending_serpent_spear.is_empty():
+		_resolve_serpent_spear_target(target_index)
+		return
 	if flow_state != FlowState.SELECTING_TARGET:
 		return
 	if selected_hand_index < 0 or selected_hand_index >= current_player().hand.size():
 		request_cancel_selection()
 		return
 	var card: Card = current_player().hand[selected_hand_index]
+	if target_index < 0 or target_index >= players.size():
+		request_cancel_selection()
+		return
 	var target: BattlePlayer = players[target_index]
+	if target.is_dying():
+		_reject("该角色已经阵亡。")
+		return
 	if card.card_type == Card.CardType.SLASH:
 		if target == current_player():
 			_reject("【杀】必须指定对方。")
@@ -1115,6 +1381,19 @@ func request_target(target_index: int) -> void:
 
 func request_cancel_selection() -> void:
 	if flow_state != FlowState.SELECTING_TARGET:
+		return
+	if _pending_borrow_slash_target:
+		## 取消借刀杀人：指定流程中止，锦囊按未结算处理。
+		_pending_borrow_slash_target = false
+		_borrow_slash_target = null
+		selected_hand_index = -1
+		_finish_nullifiable_effect()
+		return
+	if not _pending_serpent_spear.is_empty():
+		## 取消丈八蛇矛：代价牌已进入处理区，直接返回出牌阶段。
+		_pending_serpent_spear.clear()
+		selected_hand_index = -1
+		_return_to_play()
 		return
 	selected_hand_index = -1
 	flow_state = FlowState.PLAY_ACTIVE
@@ -1266,8 +1545,14 @@ func request_skill_target(target_index: int) -> void:
 	):
 		return
 	var target: BattlePlayer = players[target_index]
+	if target.is_dying():
+		_reject("该角色已经阵亡。")
+		return
 	if target == skill_actor and not pending_skill.allows_self_target():
 		_reject("该技能必须指定其他角色。")
+		return
+	if pending_skill != null and pending_skill.id == &"lijian":
+		_resolve_lijian_target(target)
 		return
 	if pending_skill.activation_mode == Skill.ActivationMode.ACTIVE:
 		if not pending_skill.validate_target(target, pending_skill_cards, self, skill_actor):
@@ -1493,7 +1778,7 @@ func _use_view_as_card_after_cost(
 			[paid],
 			effective,
 			skill,
-			other_player(actor),
+			_response_opponent(actor),
 			true,
 			"技能响应"
 		)
@@ -1556,9 +1841,10 @@ func _resolve_active_skill() -> void:
 		lose_hp(actor, 1, Callable(self, "_finish_kurou").bind(actor))
 		return
 	if preview_action == &"fanjian":
+		var fanjian_target: BattlePlayer = pending_skill_targets[0] if not pending_skill_targets.is_empty() else null
 		actor.record_skill_use(skill)
 		_clear_skill_context()
-		_begin_fanjian(actor)
+		_begin_fanjian(actor, fanjian_target)
 		return
 	if preview_action == &"jieyin":
 		_resolve_jieyin(actor, skill, cards)
@@ -1567,10 +1853,13 @@ func _resolve_active_skill() -> void:
 		_resolve_qingnang(actor, skill, cards)
 		return
 	if preview_action == &"lijian":
-		## 双人局不足两名男性角色，离间不应进入结算。
-		_add_log("【离间】当前无合法目标组合，无法发动。")
-		_clear_skill_context()
-		_return_to_play()
+		## 多人局：两步选择两名男性角色（发起者、决斗对象）后结算。
+		if pending_skill_targets.size() >= 2:
+			_resolve_lijian(actor, skill, cards, pending_skill_targets[0], pending_skill_targets[1])
+		else:
+			_add_log("【离间】需要选择两名男性角色。")
+			_clear_skill_context()
+			_return_to_play()
 		return
 	_move_cards(
 		actor,
@@ -1741,7 +2030,7 @@ func _apply_skill_resolution(
 					])
 		&"replace_draw_with_steal":
 			var draw := event_context as DrawContext
-			var target: BattlePlayer = other_player(owner)
+			var target: BattlePlayer = _steal_target_for(owner)
 			if draw != null and not target.hand.is_empty():
 				draw.draw_replaced = true
 				draw.final_count = 0
@@ -1832,7 +2121,13 @@ func _find_triggered_skill(
 
 
 func _resolve_rende(actor: BattlePlayer, skill: Skill, cards: Array[Card]) -> void:
-	var target: BattlePlayer = other_player(actor)
+	## 多人局：玩家可任选一名其他存活角色作为接收者（AI 交给玩家）。
+	var target: BattlePlayer = pending_skill_targets[0] if not pending_skill_targets.is_empty() else other_player(actor)
+	if target == null or target.is_dying() or target == actor:
+		_add_log("【仁德】目标已不再合法。")
+		_clear_skill_context()
+		_return_to_play()
+		return
 	_move_cards(
 		actor, actor, cards, CardZone.HAND, "通过【仁德】交给",
 		null, skill, target,
@@ -2294,12 +2589,17 @@ func _finish_luoshen() -> void:
 	_call_safe(continuation)
 
 
-func _begin_fanjian(source: BattlePlayer) -> void:
+func _begin_fanjian(source: BattlePlayer, target: BattlePlayer = null) -> void:
 	if source == null or source.hand.is_empty():
 		_return_to_play()
 		return
+	if target == null or target.is_dying() or target == source:
+		target = other_player(source)
+	if target == null:
+		_return_to_play()
+		return
 	_fanjian_source = source
-	_fanjian_target = other_player(source)
+	_fanjian_target = target
 	flow_state = FlowState.CHOOSING_SUIT
 	choice_owner = _fanjian_target
 	choice_labels = ["黑桃", "红桃", "梅花", "方块"]
@@ -2349,6 +2649,90 @@ func _after_fanjian_gained(source: BattlePlayer, target: BattlePlayer, gained: C
 	else:
 		var use_context := SkillUseContext.new(source, [], Card.CardType.DUEL, source.get_skill(&"fanjian"), target, true, "【反间】")
 		_start_damage(source, target, 1, DamageNature.NORMAL, Callable(self, "_return_to_play"), null, use_context, "【反间】")
+
+
+## 【离间】两步选目标：第一步选【决斗】使用者，第二步选【决斗】对象。
+func _resolve_lijian_target(target: BattlePlayer) -> void:
+	if target == null or target.is_dying() or target == skill_actor or target.gender != GeneralDefinition.Gender.MALE:
+		_reject("【离间】只能选择两名其他男性角色。")
+		return
+	if _lijian_first_target == null:
+		_lijian_first_target = target
+		_add_log("%s 选择 %s 作为【离间】的【决斗】使用者，请再选择【决斗】对象。" % [
+			skill_actor.player_name,
+			target.player_name,
+		])
+		flow_state = FlowState.SKILL_SELECT_TARGET
+		_emit_state()
+		return
+	if target == _lijian_first_target:
+		_reject("【决斗】对象不能与使用者相同。")
+		return
+	var first: BattlePlayer = _lijian_first_target
+	_lijian_first_target = null
+	pending_skill_targets = [first, target]
+	_resolve_active_skill()
+
+
+func _resolve_lijian(
+	actor: BattlePlayer,
+	skill: Skill,
+	cards: Array[Card],
+	first: BattlePlayer,
+	second: BattlePlayer
+) -> void:
+	if (
+		first == null or second == null or first == second
+		or first == actor or second == actor
+		or first.is_dying() or second.is_dying()
+		or first.gender != GeneralDefinition.Gender.MALE
+		or second.gender != GeneralDefinition.Gender.MALE
+	):
+		_add_log("【离间】目标组合已不再合法。")
+		_clear_skill_context()
+		_return_to_play()
+		return
+	_move_cards(
+		actor,
+		actor,
+		cards,
+		CardZone.DISCARD,
+		"作为【离间】代价",
+		null,
+		skill,
+		null,
+		Callable(self, "_apply_lijian").bind(actor, skill, first, second, cards)
+	)
+
+
+func _apply_lijian(
+	actor: BattlePlayer,
+	skill: Skill,
+	first: BattlePlayer,
+	second: BattlePlayer,
+	paid: Array[Card]
+) -> void:
+	actor.record_skill_use(skill)
+	_add_log("%s 发动【离间】，弃置%s；令 %s 视为对 %s 使用【决斗】。" % [
+		actor.player_name,
+		_card_list_text(paid),
+		first.player_name,
+		second.player_name,
+	])
+	_clear_skill_context()
+	var virtual_duel: Card = DuelCard.new()
+	_active_use_context = SkillUseContext.new(
+		first, [], Card.CardType.DUEL, skill, second, true, "【离间】"
+	)
+	_start_nullifiable_effect(
+		virtual_duel,
+		first,
+		second,
+		Callable(self, "_apply_duel"),
+		Callable(self, "_finish_nullifiable_effect"),
+		Callable(self, "_return_to_play"),
+		true
+	)
 
 
 ## 将同一时机的技能一次性构造后串行结算，避免异步选择覆盖 pending_skill。
@@ -2638,7 +3022,8 @@ func _finish_turn_from_end_phase() -> void:
 
 
 func _after_end_phase_triggers() -> void:
-	current_player_index = 1 - current_player_index
+	## 线性轮转：寻找下一名存活角色，已死亡角色自动跳过。
+	current_player_index = next_living_player_index(current_player_index)
 	_schedule("_begin_turn", 0.6)
 
 
@@ -3287,15 +3672,16 @@ func _accept_effective_response(context: SkillUseContext, origin: FlowState) -> 
 			_duel_other = previous
 			_configure_duel_response()
 		FlowState.BORROW_RESPONSE:
+			var slash_target: BattlePlayer = _borrow_slash_target if _borrow_slash_target != null else _borrow_source
 			_add_log("%s 响应【借刀杀人】，对 %s 使用【杀】。" % [
 				_borrow_target.player_name,
-				_borrow_source.player_name,
+				slash_target.player_name,
 			])
-			context.target = _borrow_source
+			context.target = slash_target
 			var nature: DamageNature = DamageNature.FIRE if _has_equipment(_borrow_target, Card.CardType.VERMILION_FAN) else DamageNature.NORMAL
 			_start_slash_response(
 				_borrow_target,
-				_borrow_source,
+				slash_target,
 				1,
 				Callable(self, "_finish_nullifiable_effect"),
 				nature,
@@ -3551,7 +3937,8 @@ func _start_nullifiable_effect(
 	_effect_harmful = harmful
 	_nullification_count = 0
 	_nullification_passes = 0
-	_nullification_responder_index = player_index(other_player(source))
+	## 无懈可击链按行动顺序从来源的下一名存活角色开始，全员依次响应。
+	_nullification_responder_index = next_living_player_index(player_index(source))
 	flow_state = FlowState.NULLIFICATION_RESPONSE
 	_add_log("【%s】即将对 %s 生效，进入【无懈可击】响应链。" % [card.rule_display_name(), target.player_name])
 	_emit_state()
@@ -3580,7 +3967,7 @@ func _apply_nullification_played(responder: BattlePlayer) -> void:
 	_nullification_count += 1
 	_nullification_passes = 0
 	_add_log("%s 使用【无懈可击】（链数 %d）。" % [responder.player_name, _nullification_count])
-	_nullification_responder_index = 1 - _nullification_responder_index
+	_nullification_responder_index = next_living_player_index(_nullification_responder_index)
 	flow_state = FlowState.NULLIFICATION_RESPONSE
 	_emit_state()
 	if players[_nullification_responder_index].is_ai:
@@ -3590,10 +3977,11 @@ func _apply_nullification_played(responder: BattlePlayer) -> void:
 func _pass_nullification(responder: BattlePlayer) -> void:
 	_add_log("%s 放弃使用【无懈可击】。" % responder.player_name)
 	_nullification_passes += 1
-	if _nullification_passes >= 2:
+	## 全员连续放弃（存活角色数）后才结算，死亡角色会被跳过。
+	if _nullification_passes >= living_players().size():
 		_finalize_nullification_chain()
 		return
-	_nullification_responder_index = 1 - _nullification_responder_index
+	_nullification_responder_index = next_living_player_index(_nullification_responder_index)
 	flow_state = FlowState.NULLIFICATION_RESPONSE
 	_emit_state()
 	if players[_nullification_responder_index].is_ai:
@@ -3614,10 +4002,6 @@ func _perform_ai_nullification() -> void:
 		_play_nullification(responder, index)
 	else:
 		_pass_nullification(responder)
-		## 双人局同一响应者需连续两次放弃才结算；双方 AI 时自动续步，
-		## 不依赖看门狗也能在一帧内完成整条无懈链。
-		if flow_state == FlowState.NULLIFICATION_RESPONSE and players[_nullification_responder_index].is_ai:
-			_schedule("_perform_ai_nullification", 0.3)
 
 
 func _finalize_nullification_chain() -> void:
@@ -3730,10 +4114,63 @@ func _apply_duel() -> void:
 func _apply_borrow_sword() -> void:
 	_borrow_source = _effect_source
 	_borrow_target = _effect_target
+	_borrow_slash_target = null
+	_pending_borrow_slash_target = false
 	if _borrow_target.weapon == null:
 		_add_log("目标已失去武器，【借刀杀人】结束。")
 		_finish_nullifiable_effect()
 		return
+	## 人类使用借刀杀人时，可指定“被出杀”的目标角色；候选多于一个时进入选择，
+	## 只有一个候选（如 1v1）时自动指定，保持旧体验。
+	if _borrow_source == player1:
+		var candidates: Array[BattlePlayer] = _borrow_designated_candidates()
+		if candidates.size() > 1:
+			_pending_borrow_slash_target = true
+			flow_state = FlowState.SELECTING_TARGET
+			_add_log("请选择【借刀杀人】指定出【杀】的目标角色。")
+			_emit_state()
+			return
+		_borrow_slash_target = candidates[0] if not candidates.is_empty() else _borrow_source
+	else:
+		## AI 使用借刀杀人：总是指定自己。
+		_borrow_slash_target = _borrow_source
+	_enter_borrow_response()
+
+
+## 借刀杀人“被出杀”目标：武器持有者攻击范围内的其他存活角色。
+func _borrow_designated_candidates() -> Array[BattlePlayer]:
+	var result: Array[BattlePlayer] = []
+	if _borrow_target == null:
+		return result
+	for player: BattlePlayer in living_players():
+		if player != _borrow_target and can_slash_target(_borrow_target, player):
+			result.append(player)
+	return result
+
+
+func _resolve_borrow_slash_target(target_index: int) -> void:
+	if not _pending_borrow_slash_target:
+		return
+	_pending_borrow_slash_target = false
+	if target_index < 0 or target_index >= players.size():
+		_finish_nullifiable_effect()
+		return
+	var target: BattlePlayer = players[target_index]
+	if (
+		target == null or target.is_dying()
+		or target == _borrow_target
+		or not can_slash_target(_borrow_target, target)
+	):
+		_reject("该角色不是【借刀杀人】指定出【杀】的合法目标。")
+		_pending_borrow_slash_target = true
+		return
+	_borrow_slash_target = target
+	_enter_borrow_response()
+
+
+func _enter_borrow_response() -> void:
+	if _borrow_slash_target == null:
+		_borrow_slash_target = _borrow_source
 	flow_state = FlowState.BORROW_RESPONSE
 	_emit_state()
 	if _borrow_target.is_ai:
@@ -3741,7 +4178,7 @@ func _apply_borrow_sword() -> void:
 	else:
 		var labels: Array[String] = []
 		if _can_supply_slash(_borrow_target):
-			labels.append("对使用者打出【杀】")
+			labels.append("对 %s 打出【杀】" % _borrow_slash_target.player_name)
 		labels.append("交出武器")
 		_show_choices(_borrow_target, labels, Callable(self, "_resolve_borrow_choice"))
 
@@ -3762,18 +4199,19 @@ func _borrow_use_slash() -> void:
 		_borrow_give_weapon()
 		return
 	var slash: Card = _borrow_target.hand[slash_index]
+	var slash_target: BattlePlayer = _borrow_slash_target if _borrow_slash_target != null else _borrow_source
 	var context := SkillUseContext.new(
 		_borrow_target,
 		[slash],
 		Card.CardType.SLASH,
 		null,
-		_borrow_source,
+		slash_target,
 		false,
 		"【借刀杀人】响应"
 	)
 	_move_cards(
 		_borrow_target,
-		_borrow_source,
+		slash_target,
 		[slash],
 		CardZone.PROCESSING,
 		"打出【杀】响应【借刀杀人】",
@@ -3856,9 +4294,9 @@ func _start_global_trick(card: Card, source: BattlePlayer) -> void:
 	_global_index = 0
 	match card.card_type:
 		Card.CardType.BARBARIAN_INVASION, Card.CardType.ARROW_BARRAGE:
-			_global_targets = [other_player(source)]
+			_global_targets = _other_living_players(source)
 		Card.CardType.PEACH_GARDEN, Card.CardType.AMAZING_GRACE:
-			_global_targets = two_player_action_order(source)
+			_global_targets = _all_living_players_ordered_from(source)
 	if card.card_type == Card.CardType.AMAZING_GRACE:
 		revealed_cards.clear()
 		for _index: int in _global_targets.size():
@@ -3866,10 +4304,10 @@ func _start_global_trick(card: Card, source: BattlePlayer) -> void:
 			if revealed != null:
 				revealed_cards.append(revealed)
 		_add_log("【五谷丰登】亮出：%s。" % _card_list_text(revealed_cards))
-		_add_log("【五谷丰登】选择顺序：%s → %s（使用者优先）。" % [
-			_global_targets[0].player_name,
-			_global_targets[1].player_name,
-		])
+		var order_names: PackedStringArray = []
+		for player: BattlePlayer in _global_targets:
+			order_names.append(player.player_name)
+		_add_log("【五谷丰登】选择顺序：%s（使用者优先）。" % " → ".join(order_names))
 	_process_next_global_target()
 
 
@@ -4023,9 +4461,38 @@ func _take_amazing_grace_card(card_index: int) -> void:
 	_finish_nullifiable_effect()
 
 
+func _iron_chain_options(user: BattlePlayer) -> Array[Dictionary]:
+	var options: Array[Dictionary] = [{"code": "self", "label": "切换自己连环"}]
+	if user.is_ai:
+		## 全 AI 模式下 player1 也可能是 AI，统一按“谁在使用”决定对手。
+		var rival: BattlePlayer = _default_attack_target(user)
+		if rival != null:
+			options.append({"code": "enemy", "label": "切换玩家连环", "target": rival})
+	else:
+		for enemy: BattlePlayer in living_enemies():
+			options.append({"code": "enemy", "label": "切换%s连环" % enemy.player_name, "target": enemy})
+	## 1v1 兼容：保持原有“自己/对手/双方/重铸”选项顺序，避免依赖旧索引的测试与旧习惯被破坏。
+	if not user.is_ai and living_enemies().size() == 1:
+		var rival: BattlePlayer = first_living_enemy()
+		if rival != null:
+			return [
+				{"code": "self", "label": "切换自己连环"},
+				{"code": "enemy", "label": "切换对手连环", "target": rival},
+				{"code": "both", "label": "切换双方连环", "target": rival},
+				{"code": "recast", "label": "重铸（摸一张）"},
+			]
+	if not _other_living_players(user).is_empty():
+		options.append({"code": "all", "label": "切换所有其他角色连环"})
+	options.append({"code": "recast", "label": "重铸（摸一张）"})
+	return options
+
+
 func _begin_iron_chain_choice(user: BattlePlayer, hand_index: int) -> void:
 	selected_hand_index = hand_index
-	choice_labels = ["切换自己连环", "切换对手连环", "切换双方连环", "重铸（摸一张）"]
+	_iron_chain_options_cache = _iron_chain_options(user)
+	choice_labels.clear()
+	for option: Dictionary in _iron_chain_options_cache:
+		choice_labels.append(option["label"])
 	choice_owner = user
 	_choice_handler = Callable(self, "_resolve_iron_chain_choice")
 	flow_state = FlowState.CHOOSING_OPTION
@@ -4050,19 +4517,30 @@ func _proceed_iron_chain_use(user: BattlePlayer, card: Card, option_index: int) 
 	_active_use_context = SkillUseContext.new(
 		user, [card], Card.CardType.IRON_CHAIN, null, null, false, "【铁索连环】"
 	)
-	if option_index == 3:
+	if option_index < 0 or option_index >= _iron_chain_options_cache.size():
+		_return_to_play()
+		return
+	var option: Dictionary = _iron_chain_options_cache[option_index]
+	if option.get("code", "") == "recast":
 		draw_cards(user, 1)
 		_add_log("%s 重铸【铁索连环】，摸一张牌。" % user.player_name)
 		_return_to_play()
 		return
 	var targets: Array[BattlePlayer] = []
-	match option_index:
-		0:
+	match option.get("code", ""):
+		"self":
 			targets = [user]
-		1:
-			targets = [other_player(user)]
-		2:
-			targets = [user, other_player(user)]
+		"human", "enemy":
+			var chosen: BattlePlayer = option.get("target", null)
+			if chosen != null and not chosen.is_dying():
+				targets = [chosen]
+		"both":
+			targets = [user]
+			var rival: BattlePlayer = option.get("target", null)
+			if rival != null and not rival.is_dying():
+				targets.append(rival)
+		"all":
+			targets = _other_living_players(user)
 	var continuation: Callable = Callable(self, "_start_iron_chain").bind(card, user, targets)
 	_enqueue_triggers(&"after_trick_use", _active_use_context, [user], continuation)
 
@@ -4153,6 +4631,9 @@ func _perform_ai_choice() -> void:
 
 func _begin_turn() -> void:
 	if flow_state == FlowState.GAME_OVER:
+		return
+	## 防御性兜底：回合切换时若已满足胜负条件（如闪电/延时伤害造成全灭），直接结算。
+	if check_battle_result():
 		return
 	turn_number += 1
 	var active: BattlePlayer = current_player()
@@ -4295,7 +4776,8 @@ func _start_judgement(
 	_judgement_result_handler = result_handler
 	_judgement_continue = continuation
 	_judgement_guicai_owners.clear()
-	for player: BattlePlayer in two_player_action_order(judged_player):
+	## 鬼才改判窗口按行动顺序遍历全部存活角色（不再假设只有两人）。
+	for player: BattlePlayer in _all_living_players_ordered_from(judged_player):
 		if player.has_skill(&"guicai") and player.hp > 0:
 			_judgement_guicai_owners.append(player)
 	_judgement_guicai_index = 0
@@ -4422,7 +4904,9 @@ func _cancel_delayed_judgement() -> void:
 
 
 func _pass_lightning(card: Card) -> void:
-	var next: BattlePlayer = other_player(current_player())
+	var next: BattlePlayer = _next_living_player_after(current_player())
+	if next == null:
+		next = current_player()
 	if not next.has_delayed_trick(Card.CardType.LIGHTNING):
 		next.add_delayed_trick(card)
 		_add_log("【闪电】未命中，传递到 %s 的判定区。" % next.player_name)
@@ -4561,7 +5045,11 @@ func _continue_after_damage(context: DamageContext) -> void:
 
 
 func _after_damage_dying_resolved(context: DamageContext) -> void:
-	if flow_state == FlowState.GAME_OVER or context.target.hp <= 0:
+	if flow_state == FlowState.GAME_OVER:
+		return
+	if context.target.hp <= 0:
+		## 目标阵亡但战斗未结束（1v2+）：继续结算剩余伤害，不阻断后续目标。
+		_process_damage_queue()
 		return
 	_enqueue_triggers(&"after_damage", context, [context.target], Callable(self, "_process_damage_queue"))
 
@@ -4678,39 +5166,91 @@ func _resolve_rescue_pass(actor: BattlePlayer) -> void:
 		return
 	_add_log("%s 放弃救援%s。" % [actor.player_name, dying_player.player_name])
 	if actor == dying_player:
-		var other: BattlePlayer = other_player(dying_player)
-		if other.hp > 0:
-			rescue_actor = other
-			if _rescue_options(other).is_empty():
-				_add_log("%s 没有可用救援牌，放弃。" % other.player_name)
-				_resolve_rescue_pass(other)
+		var next: BattlePlayer = _next_rescue_actor(dying_player)
+		if next != null:
+			rescue_actor = next
+			if _rescue_options(next).is_empty():
+				_add_log("%s 没有可用救援牌，放弃。" % next.player_name)
+				_resolve_rescue_pass(next)
 				return
 			_emit_state()
-			if other.is_ai:
+			if next.is_ai:
 				_perform_ai_rescue()
 			return
 	_declare_death(dying_player)
 
 
 func _declare_death(loser: BattlePlayer) -> void:
-	winner = other_player(loser)
+	_add_log("%s 阵亡。" % loser.player_name)
+	if check_battle_result():
+		return
+	## 仍有存活敌人：战斗继续。恢复原结算链（伤害队列/技能 continuation），
+	## 死亡角色由回合状态机与目标合法性检查自动跳过。
+	var after: Callable = _dying_after
+	_dying_after = Callable()
+	rescue_actor = null
+	dying_player = null
+	_emit_state()
+	_call_safe(after)
+
+
+## 所有胜负出口的汇总判定：玩家死亡 → 失败；存活反贼为空 → 胜利。
+## 返回 true 表示战斗已终结，返回 false 表示战斗继续进行。
+func check_battle_result() -> bool:
+	if flow_state == FlowState.GAME_OVER:
+		return true
+	if player1 != null and player1.is_dying():
+		_finish_battle_loss(player1)
+		return true
+	if living_enemies().is_empty():
+		_finish_battle_win()
+		return true
+	return false
+
+
+func _finish_battle_win() -> void:
+	winner = player1
 	flow_state = FlowState.GAME_OVER
 	_action_generation += 1
 	_settle_processing_cards()
 	_clear_skill_context()
+	_clear_attack_context()
 	rescue_actor = null
 	dying_player = null
-	_slash_dodge_forbidden = false
-	_liuli_slash_context = null
-	_liuli_continue = Callable()
+	_add_log("所有反贼阵亡，%s（%s）获胜！" % [player1.player_name, player1.role_name])
+	_emit_state()
+	match_finished.emit(winner, null)
+	battle_finished.emit(true)
+	_schedule_auto_restart()
+
+
+func _finish_battle_loss(loser: BattlePlayer) -> void:
+	winner = first_living_enemy()
+	if winner == null and not enemies.is_empty():
+		winner = enemies[0]
+	if winner == null:
+		winner = player1
+	flow_state = FlowState.GAME_OVER
+	_action_generation += 1
+	_settle_processing_cards()
+	_clear_skill_context()
+	_clear_attack_context()
+	rescue_actor = null
+	dying_player = null
 	_add_log("%s 阵亡。%s（%s）获胜！" % [loser.player_name, winner.player_name, winner.role_name])
 	_emit_state()
 	match_finished.emit(winner, loser)
-	if automated_mode:
-		## 纯 AI 死循环：本局结束后按相同配置自动重开。
-		## 不使用 _schedule（其 generation 守卫会被 start_automated_match 复位使回调失效）。
-		if is_inside_tree():
-			get_tree().create_timer(1.0).timeout.connect(_restart_automated_match)
+	battle_finished.emit(false)
+	_schedule_auto_restart()
+
+
+func _schedule_auto_restart() -> void:
+	if not automated_mode:
+		return
+	## 纯 AI 死循环：本局结束后按相同配置自动重开。
+	## 不使用 _schedule（其 generation 守卫会被 start_automated_match 复位使回调失效）。
+	if is_inside_tree():
+		get_tree().create_timer(1.0).timeout.connect(_restart_automated_match)
 
 
 func _perform_ai_response() -> void:
@@ -4784,13 +5324,13 @@ func _try_ai_effective_response(
 			[direct],
 			effective_type,
 			null,
-			other_player(player),
+			_response_opponent(player),
 			false,
 			"响应"
 		)
 		_move_cards(
 			player,
-			other_player(player),
+			_response_opponent(player),
 			[direct],
 			CardZone.PROCESSING,
 			"打出【%s】响应" % CardFactory.create_card(effective_type).display_name,
@@ -4820,7 +5360,7 @@ func _try_ai_effective_response(
 			[physical],
 			effective_type,
 			skill,
-			other_player(player),
+			_response_opponent(player),
 			true,
 			"技能响应"
 		)
@@ -4832,7 +5372,7 @@ func _try_ai_effective_response(
 		])
 		_move_cards(
 			player,
-			other_player(player),
+			_response_opponent(player),
 			[physical],
 			CardZone.PROCESSING,
 			"作为【%s】响应代价" % skill.display_name,
@@ -4896,7 +5436,16 @@ func _perform_ai_play() -> void:
 	if flow_state != FlowState.PLAY_ACTIVE or phase != Phase.PLAY or not current_player().is_ai:
 		return
 	var ai: BattlePlayer = current_player()
-	var enemy: BattlePlayer = other_player(ai)
+	## AI 行动前检查：自己存活、玩家存活、战斗未结束。
+	if ai.is_dying() or player1 == null or player1.is_dying():
+		_finish_play_phase()
+		return
+	## 全 AI 模式下 player1 也可能是 AI：按“谁在使用”决定目标，
+	## player1 打第一个存活反贼，其余 AI 打 player1。
+	var enemy: BattlePlayer = _default_attack_target(ai)
+	if enemy == null:
+		_finish_play_phase()
+		return
 
 	if ai.hp < ai.max_hp:
 		var peach_index: int = ai.find_card(Card.CardType.PEACH)
@@ -4951,6 +5500,7 @@ func _perform_ai_play() -> void:
 		skill_owner = ai
 		skill_actor = ai
 		pending_skill = fanjian
+		pending_skill_targets = [enemy]
 		_skill_return_state = FlowState.PLAY_ACTIVE
 		_resolve_active_skill()
 		return
@@ -5099,7 +5649,14 @@ func _execute_ai_view_as_play(
 
 
 func can_owner_deal_attack_damage(owner: BattlePlayer) -> bool:
-	if owner == null or not can_slash_target(owner, other_player(owner)):
+	if owner == null or owner.is_dying():
+		return false
+	var has_slash_target: bool = false
+	for target: BattlePlayer in _potential_targets_for(owner):
+		if can_slash_target(owner, target):
+			has_slash_target = true
+			break
+	if not has_slash_target:
 		return false
 	if owner.find_card(Card.CardType.SLASH) >= 0 or owner.find_card(Card.CardType.DUEL) >= 0:
 		return true
@@ -5606,6 +6163,8 @@ func liuli_transfer_candidates(defender: BattlePlayer, slash_context: RefCounted
 	for player: BattlePlayer in players:
 		if player == defender or player == ctx.source:
 			continue
+		if player.is_dying():
+			continue
 		if not can_slash_target(ctx.source, player):
 			continue
 		if distance_between(defender, player) > attack_range(defender):
@@ -5618,6 +6177,7 @@ func _clear_skill_context() -> void:
 	skill_owner = null
 	skill_actor = null
 	_ganglie_discard_active = false
+	_lijian_first_target = null
 	pending_skill = null
 	pending_skill_cards.clear()
 	pending_skill_targets.clear()
@@ -5722,25 +6282,60 @@ func _proceed_serpent_spear(user: BattlePlayer, paid: Array[Card], play_use: boo
 		user.player_name,
 		_card_list_text(paid),
 	])
-	var context := SkillUseContext.new(
-		user,
-		paid,
-		Card.CardType.SLASH,
-		null,
-		other_player(user),
-		true,
-		"【丈八蛇矛】"
-	)
-	if play_use:
-		var target: BattlePlayer = other_player(user)
-		context.target = target
-		_record_slash_use(user)
-		var amount: int = 2 if user.wine_active else 1
-		user.wine_active = false
-		var nature: DamageNature = DamageNature.FIRE if _has_equipment(user, Card.CardType.VERMILION_FAN) else DamageNature.NORMAL
-		_start_slash_response(user, target, amount, Callable(self, "_return_to_play"), nature, context)
+	if not play_use:
+		## 响应（打出）场景：对方由当前交互上下文决定。
+		var response_context := SkillUseContext.new(
+			user,
+			paid,
+			Card.CardType.SLASH,
+			null,
+			_response_opponent(user),
+			true,
+			"【丈八蛇矛】"
+		)
+		_accept_effective_response(response_context, response_origin)
 		return
-	_accept_effective_response(context, response_origin)
+	## 出牌阶段视为【杀】：多人局让玩家明确选择目标，避免写死第一个反贼。
+	if user == player1 and living_enemies().size() > 1:
+		_pending_serpent_spear = [user, paid]
+		selected_hand_index = -1
+		flow_state = FlowState.SELECTING_TARGET
+		_add_log("请选择【丈八蛇矛】视为【杀】的目标。")
+		_emit_state()
+		return
+	_fire_serpent_spear_slash(user, paid, _default_attack_target(user))
+
+
+func _fire_serpent_spear_slash(user: BattlePlayer, paid: Array[Card], target: BattlePlayer) -> void:
+	if target == null or target.is_dying() or target == user or not can_slash_target(user, target):
+		_add_log("【丈八蛇矛】的目标已不再合法，实体牌进入弃牌堆。")
+		_settle_processing_cards()
+		_return_to_play()
+		return
+	var context := SkillUseContext.new(user, paid, Card.CardType.SLASH, null, target, true, "【丈八蛇矛】")
+	context.target = target
+	_record_slash_use(user)
+	var amount: int = 2 if user.wine_active else 1
+	user.wine_active = false
+	var nature: DamageNature = DamageNature.FIRE if _has_equipment(user, Card.CardType.VERMILION_FAN) else DamageNature.NORMAL
+	_start_slash_response(user, target, amount, Callable(self, "_return_to_play"), nature, context)
+
+
+func _resolve_serpent_spear_target(target_index: int) -> void:
+	if _pending_serpent_spear.is_empty():
+		return
+	var user: BattlePlayer = _pending_serpent_spear[0]
+	var paid: Array[Card] = _pending_serpent_spear[1]
+	_pending_serpent_spear.clear()
+	if target_index < 0 or target_index >= players.size():
+		_return_to_play()
+		return
+	var target: BattlePlayer = players[target_index]
+	if target.is_dying() or target == user or not can_slash_target(user, target):
+		_reject("该角色不是合法的【杀】目标。")
+		_return_to_play()
+		return
+	_fire_serpent_spear_slash(user, paid, target)
 
 
 func _draw_one_from_pile() -> Card:

@@ -17,12 +17,13 @@ func trigger_timing() -> StringName:
 
 func can_trigger(event_context: RefCounted, game: Node, owner: Node) -> bool:
 	var draw := event_context as DrawContext
-	return (
-		draw != null
-		and draw.player == owner
-		and draw.final_count > 0
-		and not game.other_player(owner).hand.is_empty()
-	)
+	if draw == null or draw.player != owner or draw.final_count <= 0:
+		return false
+	## 多人局：任意一名对手持有手牌即可触发，不再只看默认对手。
+	for target: BattlePlayer in game._potential_targets_for(owner):
+		if not target.hand.is_empty():
+			return true
+	return false
 
 
 func should_ai_activate(event_context: RefCounted, game: Node, owner: Node) -> bool:

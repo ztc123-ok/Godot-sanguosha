@@ -204,78 +204,11 @@ text = "准备开始"
 horizontal_alignment = 1
 vertical_alignment = 1
 
-[node name="OpponentZone" type="PanelContainer" parent="UIManager/Root/Margin/Layout"]
+[node name="EnemyContainer" type="HBoxContainer" parent="UIManager/Root/Margin/Layout"]
 unique_name_in_owner = true
 custom_minimum_size = Vector2(0, 142)
 layout_mode = 2
-theme_override_styles/panel = SubResource("StyleOpponent")
-script = ExtResource("5_zone")
-player_index = 1
-
-[node name="OpponentMargin" type="MarginContainer" parent="UIManager/Root/Margin/Layout/OpponentZone"]
-layout_mode = 2
-theme_override_constants/margin_left = 18
-theme_override_constants/margin_top = 10
-theme_override_constants/margin_right = 18
-theme_override_constants/margin_bottom = 10
-
-[node name="OpponentRow" type="HBoxContainer" parent="UIManager/Root/Margin/Layout/OpponentZone/OpponentMargin"]
-layout_mode = 2
-theme_override_constants/separation = 18
-
-[node name="Avatar" type="PanelContainer" parent="UIManager/Root/Margin/Layout/OpponentZone/OpponentMargin/OpponentRow"]
-custom_minimum_size = Vector2(98, 0)
-layout_mode = 2
-theme_override_styles/panel = SubResource("StyleHeader")
-
-[node name="AvatarText" type="Label" parent="UIManager/Root/Margin/Layout/OpponentZone/OpponentMargin/OpponentRow/Avatar"]
-layout_mode = 2
-theme_override_colors/font_color = Color(0.92, 0.44, 0.33, 1)
-theme_override_font_sizes/font_size = 45
-text = "反"
-horizontal_alignment = 1
-vertical_alignment = 1
-
-[node name="Info" type="VBoxContainer" parent="UIManager/Root/Margin/Layout/OpponentZone/OpponentMargin/OpponentRow"]
-custom_minimum_size = Vector2(285, 0)
-layout_mode = 2
-theme_override_constants/separation = 7
-
-[node name="OpponentName" type="Label" parent="UIManager/Root/Margin/Layout/OpponentZone/OpponentMargin/OpponentRow/Info"]
-unique_name_in_owner = true
-layout_mode = 2
-theme_override_font_sizes/font_size = 21
-text = "Player2 · 反贼（AI）"
-
-[node name="OpponentHP" type="ProgressBar" parent="UIManager/Root/Margin/Layout/OpponentZone/OpponentMargin/OpponentRow/Info"]
-unique_name_in_owner = true
-custom_minimum_size = Vector2(0, 22)
-layout_mode = 2
-max_value = 4.0
-value = 4.0
-show_percentage = false
-theme_override_styles/background = SubResource("StyleBarBackground")
-theme_override_styles/fill = SubResource("StyleBarOpponent")
-
-[node name="OpponentHPText" type="Label" parent="UIManager/Root/Margin/Layout/OpponentZone/OpponentMargin/OpponentRow/Info"]
-unique_name_in_owner = true
-layout_mode = 2
-theme_override_colors/font_color = Color(0.95, 0.82, 0.78, 1)
-text = "体力 4 / 4    手牌 4 / 上限 4"
-
-[node name="OpponentStatus" type="Label" parent="UIManager/Root/Margin/Layout/OpponentZone/OpponentMargin/OpponentRow/Info"]
-unique_name_in_owner = true
-layout_mode = 2
-theme_override_colors/font_color = Color(0.82, 0.62, 0.55, 1)
-text = "连环：未横置 · 武器：无 · 判定区：空"
-clip_text = true
-
-[node name="OpponentHand" type="HBoxContainer" parent="UIManager/Root/Margin/Layout/OpponentZone/OpponentMargin/OpponentRow"]
-unique_name_in_owner = true
-layout_mode = 2
-size_flags_horizontal = 3
-alignment = 2
-theme_override_constants/separation = -22
+theme_override_constants/separation = 12
 
 [node name="BattleLine" type="HBoxContainer" parent="UIManager/Root/Margin/Layout"]
 custom_minimum_size = Vector2(0, 24)

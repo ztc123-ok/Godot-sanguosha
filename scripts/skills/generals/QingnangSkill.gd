@@ -16,8 +16,13 @@ func _init() -> void:
 func can_activate(game: Node, owner: Node) -> bool:
 	if not game.is_play_phase_for(owner) or owner.hand.is_empty():
 		return false
-	var target: BattlePlayer = game.other_player(owner)
-	return owner.hp < owner.max_hp or target.hp < target.max_hp
+	## 多人局：自己或任意一名存活角色受伤即可发动，不再只看默认对手。
+	if owner.hp < owner.max_hp:
+		return true
+	for target: BattlePlayer in game.living_players():
+		if target.hp < target.max_hp:
+			return true
+	return false
 
 func requires_target() -> bool: return true
 

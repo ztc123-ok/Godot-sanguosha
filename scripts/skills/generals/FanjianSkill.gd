@@ -6,5 +6,11 @@ func _init() -> void:
 
 func requires_card_cost() -> bool: return false
 func can_activate(game: Node, owner: Node) -> bool: return game.is_play_phase_for(owner) and not owner.hand.is_empty()
+func requires_target() -> bool: return true
+func validate_target(target: Node, _cards: Array[Card], _game: Node, owner: Node) -> bool:
+	if target == null or target == owner:
+		return false
+	var player: BattlePlayer = target as BattlePlayer
+	return not player.is_dying()
 func validate_cost(cards: Array[Card], _game: Node, _owner: Node) -> bool: return cards.is_empty()
 func build_resolution_request(_event_context: RefCounted, _game: Node, _owner: Node) -> Dictionary: return {"action": &"fanjian"}

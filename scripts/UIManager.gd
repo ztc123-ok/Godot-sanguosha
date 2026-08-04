@@ -9,17 +9,12 @@ extends CanvasLayer
 @onready var deck_label: Label = %DeckLabel
 @onready var prompt_label: Label = %PromptLabel
 
-@onready var opponent_zone: PlayerDropZone = %OpponentZone
+@onready var enemy_container: HBoxContainer = %EnemyContainer
 @onready var player_zone: PlayerDropZone = %PlayerZone
-@onready var opponent_name: Label = %OpponentName
 @onready var player_name: Label = %PlayerName
-@onready var opponent_hp: ProgressBar = %OpponentHP
 @onready var player_hp: ProgressBar = %PlayerHP
-@onready var opponent_hp_text: Label = %OpponentHPText
 @onready var player_hp_text: Label = %PlayerHPText
-@onready var opponent_status: Label = %OpponentStatus
 @onready var player_status: Label = %PlayerStatus
-@onready var opponent_hand: HBoxContainer = %OpponentHand
 @onready var player_hand: HBoxContainer = %PlayerHand
 
 @onready var end_play_button: Button = %EndPlayButton
@@ -59,20 +54,22 @@ var reselect_button: Button
 var skill_equipment_buttons: Array[Button] = []
 var selected_private_card_index: int = -1
 var guanxing_top_indices: Array[int] = []
+## 与 game.enemies 一一对应的动态敌方区域。
+var enemy_zones: Array[PlayerDropZone] = []
+var enemy_zone_names: Array[Label] = []
+var enemy_zone_hps: Array[ProgressBar] = []
+var enemy_zone_hp_texts: Array[Label] = []
+var enemy_zone_statuses: Array[Label] = []
+var enemy_zone_hands: Array[HBoxContainer] = []
 
 
 func _ready() -> void:
 	_build_skill_action_buttons()
 	_build_general_selection_panel()
-	# 主界面纵向空间固定，状态栏必须保持单行，否则会挤压手牌区和操作栏。
-	opponent_status.autowrap_mode = TextServer.AUTOWRAP_OFF
 	player_status.autowrap_mode = TextServer.AUTOWRAP_OFF
-	opponent_status.clip_text = true
 	player_status.clip_text = true
 	player_status.custom_minimum_size.x = 520.0
-	opponent_zone.card_dropped.connect(_on_card_dropped)
 	player_zone.card_dropped.connect(_on_card_dropped)
-	opponent_zone.target_clicked.connect(_on_target_clicked)
 	player_zone.target_clicked.connect(_on_target_clicked)
 	end_play_button.pressed.connect(_on_end_play)
 	cancel_button.pressed.connect(_on_cancel)
@@ -107,7 +104,6 @@ func refresh() -> void:
 	if game.flow_state != GameManager.FlowState.DECK_REORDER:
 		guanxing_top_indices.clear()
 	var human: BattlePlayer = game.player1
-	var ai: BattlePlayer = game.player2
 
 	if game.flow_state == GameManager.FlowState.GENERAL_SELECTION:
 		turn_label.text = "选将阶段"
@@ -125,21 +121,13 @@ func refresh() -> void:
 		human.general_name,
 		"（男）" if human.gender == GeneralDefinition.Gender.MALE else "（女）",
 	]
-	opponent_name.text = "%s · %s · %s【%s】%s（AI）" % [
-		ai.player_name,
-		ai.role_name,
-		ai.kingdom if not ai.kingdom.is_empty() else "未定",
-		ai.general_name,
-		"（男）" if ai.gender == GeneralDefinition.Gender.MALE else "（女）",
-	]
 	_update_hp(player_hp, player_hp_text, human)
-	_update_hp(opponent_hp, opponent_hp_text, ai)
 	player_status.text = _status_text(human)
-	opponent_status.text = _status_text(ai)
 	player_status.tooltip_text = _skill_tooltip(human)
-	opponent_status.tooltip_text = _skill_tooltip(ai)
 	_rebuild_human_hand(human)
-	_rebuild_opponent_hand(ai)
+	_ensure_enemy_zones()
+	for index: int in game.enemies.size():
+		_update_enemy_zone(index)
 	_update_actions(human)
 	_update_target_highlight()
 	_update_general_panel()
@@ -193,13 +181,166 @@ func _rebuild_human_hand(player: BattlePlayer) -> void:
 		player_hand.add_child(view)
 
 
-func _rebuild_opponent_hand(player: BattlePlayer) -> void:
-	_clear_container(opponent_hand)
-	for index: int in player.hand.size():
+## 按敌人数量动态生成敌方角色区域（EnemyZone），数量变化时整体重建。
+func _ensure_enemy_zones() -> void:
+	if enemy_zones.size() == game.enemies.size():
+		return
+	_clear_container(enemy_container)
+	enemy_zones.clear()
+	enemy_zone_names.clear()
+	enemy_zone_hps.clear()
+	enemy_zone_hp_texts.clear()
+	enemy_zone_statuses.clear()
+	enemy_zone_hands.clear()
+	for index: int in game.enemies.size():
+		var enemy: BattlePlayer = game.enemies[index]
+		var zone := PlayerDropZone.new()
+		zone.name = "EnemyZone%d" % (index + 1)
+		zone.custom_minimum_size = Vector2(0, 142)
+		zone.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		zone.player_index = game.players.find(enemy)
+		zone.add_theme_stylebox_override("panel", _enemy_zone_style())
+		zone.card_dropped.connect(_on_card_dropped)
+		zone.target_clicked.connect(_on_target_clicked)
+		enemy_container.add_child(zone)
+		enemy_zones.append(zone)
+
+		var margin := MarginContainer.new()
+		margin.add_theme_constant_override("margin_left", 14)
+		margin.add_theme_constant_override("margin_top", 9)
+		margin.add_theme_constant_override("margin_right", 14)
+		margin.add_theme_constant_override("margin_bottom", 9)
+		zone.add_child(margin)
+
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 14)
+		margin.add_child(row)
+
+		var avatar := PanelContainer.new()
+		avatar.custom_minimum_size = Vector2(64, 0)
+		avatar.add_theme_stylebox_override("panel", _avatar_style())
+		row.add_child(avatar)
+		var avatar_label := Label.new()
+		avatar_label.text = "反"
+		avatar_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		avatar_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		avatar_label.add_theme_color_override("font_color", Color(0.92, 0.44, 0.33))
+		avatar_label.add_theme_font_size_override("font_size", 30)
+		avatar.add_child(avatar_label)
+
+		var info := VBoxContainer.new()
+		info.custom_minimum_size = Vector2(230, 0)
+		info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		info.add_theme_constant_override("separation", 6)
+		row.add_child(info)
+
+		var name_label := Label.new()
+		name_label.add_theme_font_size_override("font_size", 18)
+		info.add_child(name_label)
+		enemy_zone_names.append(name_label)
+
+		var hp_bar := ProgressBar.new()
+		hp_bar.custom_minimum_size = Vector2(0, 20)
+		hp_bar.show_percentage = false
+		hp_bar.add_theme_stylebox_override("background", _bar_background_style())
+		hp_bar.add_theme_stylebox_override("fill", _bar_enemy_style())
+		info.add_child(hp_bar)
+		enemy_zone_hps.append(hp_bar)
+
+		var hp_text := Label.new()
+		hp_text.add_theme_color_override("font_color", Color(0.95, 0.82, 0.78))
+		info.add_child(hp_text)
+		enemy_zone_hp_texts.append(hp_text)
+
+		var status_label := Label.new()
+		status_label.autowrap_mode = TextServer.AUTOWRAP_OFF
+		status_label.clip_text = true
+		status_label.add_theme_color_override("font_color", Color(0.82, 0.62, 0.55))
+		info.add_child(status_label)
+		enemy_zone_statuses.append(status_label)
+
+		var hand_box := HBoxContainer.new()
+		hand_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		hand_box.alignment = BoxContainer.ALIGNMENT_END
+		hand_box.add_theme_constant_override("separation", -22)
+		row.add_child(hand_box)
+		enemy_zone_hands.append(hand_box)
+
+
+func _update_enemy_zone(index: int) -> void:
+	if index < 0 or index >= game.enemies.size():
+		return
+	var enemy: BattlePlayer = game.enemies[index]
+	var zone: PlayerDropZone = enemy_zones[index]
+	var dead: bool = enemy.is_dying()
+	enemy_zone_names[index].text = "%s · 反贼 · %s【%s】（AI）%s" % [
+		enemy.player_name,
+		enemy.kingdom if not enemy.kingdom.is_empty() else "未定",
+		enemy.general_name,
+		" · 已阵亡" if dead else "",
+	]
+	_update_hp(enemy_zone_hps[index], enemy_zone_hp_texts[index], enemy)
+	enemy_zone_statuses[index].text = _status_text(enemy)
+	enemy_zone_statuses[index].tooltip_text = _skill_tooltip(enemy)
+	_clear_container(enemy_zone_hands[index])
+	for hand_index: int in enemy.hand.size():
 		var back := CardView.new()
-		back.custom_minimum_size = Vector2(62.0, 82.0)
-		back.configure(null, index, true)
-		opponent_hand.add_child(back)
+		back.custom_minimum_size = Vector2(58.0, 78.0)
+		back.configure(null, hand_index, true)
+		enemy_zone_hands[index].add_child(back)
+	zone.mouse_filter = Control.MOUSE_FILTER_IGNORE if dead else Control.MOUSE_FILTER_STOP
+
+
+func _enemy_zone_style() -> StyleBoxFlat:
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.25, 0.075, 0.068, 0.94)
+	style.border_width_left = 3
+	style.border_width_top = 3
+	style.border_width_right = 3
+	style.border_width_bottom = 3
+	style.border_color = Color(0.65, 0.22, 0.17)
+	style.corner_radius_top_left = 14
+	style.corner_radius_top_right = 14
+	style.corner_radius_bottom_right = 14
+	style.corner_radius_bottom_left = 14
+	style.shadow_color = Color(0, 0, 0, 0.3)
+	style.shadow_size = 6
+	return style
+
+
+func _avatar_style() -> StyleBoxFlat:
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.105, 0.078, 0.071, 0.96)
+	style.border_width_left = 2
+	style.border_width_top = 2
+	style.border_width_right = 2
+	style.border_width_bottom = 2
+	style.border_color = Color(0.66, 0.45, 0.22)
+	style.corner_radius_top_left = 10
+	style.corner_radius_top_right = 10
+	style.corner_radius_bottom_right = 10
+	style.corner_radius_bottom_left = 10
+	return style
+
+
+func _bar_background_style() -> StyleBoxFlat:
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.09, 0.09, 0.1, 0.9)
+	style.corner_radius_top_left = 7
+	style.corner_radius_top_right = 7
+	style.corner_radius_bottom_right = 7
+	style.corner_radius_bottom_left = 7
+	return style
+
+
+func _bar_enemy_style() -> StyleBoxFlat:
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.85, 0.26, 0.2)
+	style.corner_radius_top_left = 7
+	style.corner_radius_top_right = 7
+	style.corner_radius_bottom_right = 7
+	style.corner_radius_bottom_left = 7
+	return style
 
 
 func _clear_container(container: Container) -> void:
@@ -460,8 +601,46 @@ func _update_target_highlight() -> void:
 		GameManager.FlowState.SELECTING_TARGET,
 		GameManager.FlowState.SKILL_SELECT_TARGET,
 	]
-	opponent_zone.modulate = Color("fff0a8") if selecting else Color.WHITE
-	player_zone.modulate = Color.WHITE
+	for index: int in enemy_zones.size():
+		var enemy: BattlePlayer = game.enemies[index]
+		var zone: PlayerDropZone = enemy_zones[index]
+		if enemy.is_dying():
+			zone.modulate = Color(0.45, 0.45, 0.45)
+		elif selecting and _is_enemy_zone_selectable(enemy):
+			zone.modulate = Color("fff0a8")
+		else:
+			zone.modulate = Color.WHITE
+	if (
+		selecting
+		and game._pending_borrow_slash_target
+		and game.can_slash_target(game._borrow_target, game.player1)
+	):
+		player_zone.modulate = Color("fff0a8")
+	else:
+		player_zone.modulate = Color.WHITE
+
+
+func _is_enemy_zone_selectable(player: BattlePlayer) -> bool:
+	if game.flow_state == GameManager.FlowState.SKILL_SELECT_TARGET:
+		if game.skill_actor == null:
+			return false
+		if player == game.skill_actor and not game.pending_skill.allows_self_target():
+			return false
+		return not player.is_dying()
+	if game.flow_state == GameManager.FlowState.SELECTING_TARGET:
+		if game._pending_borrow_slash_target:
+			return game.can_slash_target(game._borrow_target, player)
+		if not game._pending_serpent_spear.is_empty():
+			return game.can_slash_target(game.player1, player)
+		var hand_index: int = game.selected_hand_index
+		if hand_index < 0 or hand_index >= game.current_player().hand.size():
+			return false
+		var card: Card = game.current_player().hand[hand_index]
+		if card.card_type == Card.CardType.SLASH:
+			return game.can_slash_target(game.current_player(), player)
+		if card.is_trick() and not card.is_delayed_trick:
+			return game._is_valid_trick_target(card, game.current_player(), player)
+	return false
 
 
 func _on_card_clicked(hand_index: int) -> void:
@@ -809,17 +988,23 @@ func _update_general_panel() -> void:
 	general_panel.visible = selection_visible
 	if not general_panel.visible:
 		return
-	var ready: bool = game.player1.general_id != &"" and game.player2.general_id != &""
+	var ready: bool = game.player1.general_id != &""
+	for enemy: BattlePlayer in game.enemies:
+		if enemy.general_id == &"":
+			ready = false
+			break
 	start_match_button.disabled = not ready
 	if ready:
-		general_summary.text = "主公：%s（%s）  VS  反贼：%s（%s）" % [
+		var enemy_summary: PackedStringArray = []
+		for enemy: BattlePlayer in game.enemies:
+			enemy_summary.append("%s（%s）" % [enemy.general_name, enemy.kingdom])
+		general_summary.text = "主公：%s（%s）  VS  %s" % [
 			game.player1.general_name,
 			game.player1.kingdom,
-			game.player2.general_name,
-			game.player2.kingdom,
+			"、".join(enemy_summary),
 		]
 	else:
-		general_summary.text = "请选择一名武将；反贼会从剩余武将中随机选择"
+		general_summary.text = "请选择一名武将；全部反贼会从剩余武将中随机选择"
 
 
 func _update_skill_equipment_buttons(player: BattlePlayer) -> void:
