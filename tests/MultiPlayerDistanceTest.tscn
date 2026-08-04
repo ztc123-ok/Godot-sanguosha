@@ -1,0 +1,7 @@
+[gd_scene load_steps=2 format=3 uid="uid://cx6b68a8p7x0"]
+
+[ext_resource type="Script" path="res://tests/MultiPlayerDistanceTest.gd" id="1_2n3p"]
+
+[node name="TestScene" type="Node"]
+script = ExtResource("1_2n3p")
+

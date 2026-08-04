@@ -16,8 +16,8 @@ func _init() -> void:
 func can_activate(game: Node, owner: Node) -> bool:
 	if not game.is_play_phase_for(owner) or owner.hand.size() < 2:
 		return false
-	## 多人局：任意一名合法对手满足条件即可发动，不再只看默认对手。
-	for target: Node in game._potential_targets_for(owner):
+	## 结姻可指定任意其他存活角色；多人局中目标不受阵营限制。
+	for target: Node in game.living_players():
 		if _target_valid(target, owner):
 			return true
 	return false

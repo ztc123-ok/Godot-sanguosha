@@ -94,6 +94,15 @@ func _test_dismantle() -> void:
 	_pass_nullification_chain()
 	_expect(p2.weapon == null, "【过河拆桥】可弃置目标武器")
 
+	_prepare_play()
+	var delayed := IndulgenceCard.new()
+	p2.add_delayed_trick(delayed)
+	_set_hand(p1, [DismantleCard.new()])
+	_set_hand(p2, [])
+	game.request_card_on_target(0, 1)
+	_pass_nullification_chain()
+	_expect(p2.indulgence_card == null and delayed in game.discard_pile, "过河拆桥移除判定区牌后实体牌进入弃牌堆")
+
 
 func _test_steal() -> void:
 	_prepare_play()
@@ -103,6 +112,15 @@ func _test_steal() -> void:
 	game.request_card_on_target(0, 1)
 	_pass_nullification_chain()
 	_expect(p2.hand.is_empty() and p1.hand.has(peach), "【顺手牵羊】获得目标手牌")
+
+	_prepare_play()
+	var delayed := SupplyShortageCard.new()
+	p2.add_delayed_trick(delayed)
+	_set_hand(p1, [StealCard.new()])
+	_set_hand(p2, [])
+	game.request_card_on_target(0, 1)
+	_pass_nullification_chain()
+	_expect(p2.supply_shortage_card == null and delayed in p1.hand, "顺手牵羊移除判定区牌后实体牌进入获得者手牌")
 
 
 func _test_draw_two_and_nullification_chain() -> void:

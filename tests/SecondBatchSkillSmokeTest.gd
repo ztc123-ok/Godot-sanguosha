@@ -92,9 +92,12 @@ func _test_fankui() -> void:
 	_expect(p2.weapon == null and weapon in p1.hand and weapon not in game.discard_pile, "反馈可具体获得明置装备并正确走失去装备入口")
 	_prepare(&"simayi", &"liubei", 1)
 	var delayed := IndulgenceCard.new(); p2.add_delayed_trick(delayed); _set_hand(p2, [])
-	game._start_damage(p2, p1, 1, GameManager.DamageNature.NORMAL, Callable(), null, null, "反馈判定区")
-	game.request_confirm_skill(); game.request_option(0)
-	_expect(p2.indulgence_card == null and delayed in p1.hand, "反馈可具体获得来源判定区牌")
+	var delayed_only := DamageContext.new(p2, p1, 1, GameManager.DamageNature.NORMAL)
+	_expect(
+		not p1.get_skill(&"fankui").can_trigger(delayed_only, game, p1)
+		and p2.indulgence_card == delayed,
+		"反馈不能获得伤害来源判定区的延时锦囊"
+	)
 	var no_source := DamageContext.new(null, p1, 1, GameManager.DamageNature.NORMAL)
 	_expect(not p1.get_skill(&"fankui").can_trigger(no_source, game, p1), "反馈对无来源伤害安全跳过")
 

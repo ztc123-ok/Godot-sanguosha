@@ -95,6 +95,8 @@ var discard_pile: Array[Card] = []
 ## 已支付但尚未完成整条效果的实体牌。效果完成后统一进入弃牌堆，
 ## 或被【奸雄】等技能从此区域取得。
 var processing_cards: Array[Card] = []
+## 当前对局由 CardFactory 实际生成的实体牌基准数（本版本为 103，不硬编码为外部报告的 108）。
+var match_card_count: int = 0
 
 var current_player_index: int = 0
 var turn_number: int = 0
@@ -182,6 +184,7 @@ var _pending_weapon_skill: Card.CardType = Card.CardType.SLASH
 var _damage_queue: Array[DamageContext] = []
 var _damage_after: Callable = Callable()
 var _dying_after: Callable = Callable()
+var _rescue_passed: Array[BattlePlayer] = []
 var _damage_trigger_continue: Callable = Callable()
 var _last_damage_context: DamageContext
 
@@ -249,7 +252,7 @@ var automated_mode: bool = false
 var auto_recover_stuck_matches: bool = true
 ## 看门狗墙钟检查间隔（秒）。Engine.time_scale 不影响该间隔。
 var watchdog_interval: float = DEFAULT_WATCHDOG_INTERVAL
-var _watchdog_accumulator: float = 0.0
+var _last_watchdog_check_wall: float = -1.0
 var _watchdog_busy: bool = false
 var _watchdog_kick_count: int = 0
 var _last_watchdog_seen_state: int = -1
@@ -314,6 +317,16 @@ func living_enemies() -> Array[BattlePlayer]:
 	return result
 
 
+func enemies_of(user: BattlePlayer) -> Array[BattlePlayer]:
+	var result: Array[BattlePlayer] = []
+	if user == null:
+		return result
+	for p: BattlePlayer in living_players():
+		if p.role_name != user.role_name:
+			result.append(p)
+	return result
+
+
 func first_living_enemy() -> BattlePlayer:
 	for enemy: BattlePlayer in enemies:
 		if not enemy.is_dying():
@@ -371,18 +384,11 @@ func _default_rival(player: BattlePlayer) -> BattlePlayer:
 
 ## 玩家出牌（或 AI 出牌）时的潜在目标集合。
 func _potential_targets_for(user: BattlePlayer) -> Array[BattlePlayer]:
-	var result: Array[BattlePlayer] = []
-	if user == null:
-		return result
-	if user == player1:
-		return living_enemies()
-	if player1 != null and not player1.is_dying():
-		result.append(player1)
-	return result
+	return enemies_of(user)
 
 
-## 突袭目标：任意一名持有手牌的对手（AI 取玩家，玩家取第一个有手牌的存活反贼）。
-func _steal_target_for(owner: BattlePlayer) -> BattlePlayer:
+## 【突袭】只能获得手牌；不要与可取得装备/判定区牌的【顺手牵羊】混用。
+func _tuxi_hand_target_for(owner: BattlePlayer) -> BattlePlayer:
 	for target: BattlePlayer in _potential_targets_for(owner):
 		if not target.hand.is_empty():
 			return target
@@ -417,8 +423,9 @@ func _any_legal_trick_target(card: Card, user: BattlePlayer) -> bool:
 
 
 func _has_any_dismantle_target(user: BattlePlayer) -> bool:
+	var dismantle: Card = CardFactory.create_card(Card.CardType.DISMANTLE)
 	for target: BattlePlayer in _potential_targets_for(user):
-		if target.total_cards_in_hand_and_equipment() > 0:
+		if _is_valid_trick_target(dismantle, user, target):
 			return true
 	return false
 
@@ -464,14 +471,12 @@ func _default_attack_target(user: BattlePlayer) -> BattlePlayer:
 func _ensure_distinct_generals() -> void:
 	var used: Array[StringName] = []
 	for player: BattlePlayer in players:
-		if player.general_id != &"" and GeneralFactory.is_valid_id(player.general_id):
-			used.append(player.general_id)
-	for player: BattlePlayer in players:
 		if (
 			player.general_id != &""
 			and GeneralFactory.is_valid_id(player.general_id)
-			and used.count(player.general_id) == 1
+			and not used.has(player.general_id)
 		):
+			used.append(player.general_id)
 			continue
 		var pool: Array[StringName] = GeneralFactory.all_general_ids()
 		pool = pool.filter(func(id: StringName) -> bool: return not used.has(id))
@@ -559,17 +564,22 @@ func _all_ai() -> bool:
 	return true
 
 
-func _process(delta: float) -> void:
+func _process(_delta: float) -> void:
+	var now: float = _wall_time()
 	if flow_state != _last_watchdog_seen_state:
 		_last_watchdog_seen_state = int(flow_state)
 		_stuck_since_wall = -1.0
+		## 每个新状态获得一个完整墙钟间隔；不能使用受 Engine.time_scale 放大的 delta。
+		_last_watchdog_check_wall = now
 	if not _all_ai() or flow_state == FlowState.GAME_OVER:
-		_watchdog_accumulator = 0.0
+		_last_watchdog_check_wall = -1.0
 		return
-	_watchdog_accumulator += delta
-	if _watchdog_accumulator < watchdog_interval:
+	if _last_watchdog_check_wall < 0.0:
+		_last_watchdog_check_wall = now
 		return
-	_watchdog_accumulator = 0.0
+	if now - _last_watchdog_check_wall < watchdog_interval:
+		return
+	_last_watchdog_check_wall = now
 	_watchdog_step()
 
 
@@ -609,6 +619,8 @@ func _ai_driver_for_state(state: FlowState) -> StringName:
 	match state:
 		FlowState.PLAY_ACTIVE:
 			return &"_perform_ai_play"
+		FlowState.SELECTING_TARGET:
+			return &"_perform_ai_target_selection"
 		FlowState.DISCARDING:
 			return &"_perform_ai_discard"
 		FlowState.RESPONDING_SLASH, FlowState.AOE_RESPONSE, \
@@ -780,6 +792,7 @@ func start_match(begin_first_turn: bool = true) -> void:
 	_clear_skill_context()
 	processing_cards.clear()
 	draw_pile = CardFactory.create_basic_deck()
+	match_card_count = draw_pile.size()
 	discard_pile.clear()
 	revealed_cards.clear()
 	current_player_index = 0
@@ -890,6 +903,7 @@ func _reset_transient_contexts() -> void:
 	_damage_queue.clear()
 	_damage_after = Callable()
 	_dying_after = Callable()
+	_rescue_passed.clear()
 	_last_damage_context = null
 	_draw_context = null
 	response_required_count = 1
@@ -1070,16 +1084,41 @@ func can_equip_weapon(user: Node) -> bool:
 func distance_between(source: BattlePlayer, target: BattlePlayer) -> int:
 	if source == null or target == null or source == target:
 		return 0
-	var distance: int = 1
+
+	var living: Array[BattlePlayer] = living_players()
+	var pos1: int = living.find(source)
+	var pos2: int = living.find(target)
+
+	var base_distance: int = 1
+	if pos1 != -1 and pos2 != -1:
+		var abs_diff: int = abs(pos1 - pos2)
+		base_distance = mini(abs_diff, living.size() - abs_diff)
+
+	var distance: int = base_distance
 	if target.horse_plus != null:
 		distance += 1
 	if source.horse_minus != null:
 		distance -= 1
+
 	for owner: BattlePlayer in players:
+		if owner.is_dying() or owner.hp <= 0:
+			continue
 		for skill: Skill in owner.skills:
 			if skill.activation_mode == Skill.ActivationMode.MODIFIER:
 				distance = skill.modify_distance(distance, source, target, self, owner)
+
 	return maxi(distance, 1)
+
+
+func _has_valid_borrow_slash_target(_source: BattlePlayer, target: BattlePlayer) -> bool:
+	if target == null or target.weapon == null:
+		return false
+	for other: BattlePlayer in living_players():
+		if other == target:
+			continue
+		if can_slash_target(target, other):
+			return true
+	return false
 
 
 func attack_range(player: BattlePlayer) -> int:
@@ -1909,6 +1948,7 @@ func _resolve_jieyin(actor: BattlePlayer, skill: Skill, cards: Array[Card]) -> v
 
 
 func _apply_jieyin(actor: BattlePlayer, skill: Skill, target: BattlePlayer, paid: Array[Card]) -> void:
+	## 目标在支付代价前已经完成合法性校验；支付后锁定结算，不因中间触发回复满体力而取消。
 	actor.record_skill_use(skill)
 	_add_log("%s 发动【结姻】，弃置%s；与 %s 各回复1点体力。" % [
 		actor.player_name,
@@ -2030,7 +2070,7 @@ func _apply_skill_resolution(
 					])
 		&"replace_draw_with_steal":
 			var draw := event_context as DrawContext
-			var target: BattlePlayer = _steal_target_for(owner)
+			var target: BattlePlayer = _tuxi_hand_target_for(owner)
 			if draw != null and not target.hand.is_empty():
 				draw.draw_replaced = true
 				draw.final_count = 0
@@ -2175,7 +2215,7 @@ func lose_hp(player: BattlePlayer, amount: int, continuation: Callable = Callabl
 
 
 func _begin_fankui(owner: BattlePlayer, context: DamageContext, continuation: Callable) -> void:
-	if context == null or context.source == null or not context.source.has_any_card_in_play_area():
+	if context == null or context.source == null or context.source.total_cards_in_hand_and_equipment() <= 0:
 		_add_log("【反馈】结算时伤害来源已无牌，安全跳过。")
 		_call_safe(continuation)
 		return
@@ -2188,9 +2228,6 @@ func _begin_fankui(owner: BattlePlayer, context: DamageContext, continuation: Ca
 	for entry: Dictionary in _equipment_choice_entries(source):
 		codes.append("equip:%s" % entry.code)
 		labels.append("%s：%s" % [entry.slot_name, (entry.card as Card).identity_text()])
-	for delayed: Card in source.delayed_tricks_in_judgement_order():
-		codes.append("delayed:%d" % int(delayed.card_type))
-		labels.append("判定区：%s" % delayed.identity_text())
 	if codes.is_empty():
 		_call_safe(continuation)
 		return
@@ -2221,15 +2258,6 @@ func _resolve_fankui_choice(index: int, owner: BattlePlayer, source: BattlePlaye
 		var slot: int = _slot_from_code(code.trim_prefix("equip:"))
 		gained = source.equipment_in_slot(slot)
 		gained_zone = _slot_to_zone(slot)
-	elif code.begins_with("delayed:"):
-		var delayed_type: Card.CardType = int(code.trim_prefix("delayed:"))
-		if source.indulgence_card != null and source.indulgence_card.card_type == delayed_type:
-			gained = source.indulgence_card
-		elif source.supply_shortage_card != null and source.supply_shortage_card.card_type == delayed_type:
-			gained = source.supply_shortage_card
-		elif source.lightning_card != null and source.lightning_card.card_type == delayed_type:
-			gained = source.lightning_card
-		gained_zone = CardZone.DELAYED_TRICK
 	if gained == null or gained_zone < 0:
 		_add_log("【反馈】所选牌已离开原区域，未复制牌。")
 		_call_safe(continuation)
@@ -2415,7 +2443,29 @@ func _begin_yiji(owner: BattlePlayer, continuation: Callable) -> void:
 	_add_log("%s 发动【遗计】，观看牌堆顶%d张牌并逐张分配。" % [owner.player_name, private_cards.size()])
 	_emit_state()
 	if owner.is_ai:
-		for index: int in private_card_assignments.size(): private_card_assignments[index] = player_index(owner)
+		var ai_allies: Array[BattlePlayer] = []
+		for p: BattlePlayer in players:
+			if p.role_name == owner.role_name and not p.is_dying() and p.hp > 0:
+				ai_allies.append(p)
+		for index: int in private_card_assignments.size():
+			var card: Card = private_cards[index]
+			var recipient: BattlePlayer = owner
+			if card != null and not ai_allies.is_empty():
+				if card.card_type in [Card.CardType.PEACH, Card.CardType.WINE]:
+					var wounded: Array[BattlePlayer] = []
+					for ally: BattlePlayer in ai_allies:
+						if ally.hp < ally.max_hp:
+							wounded.append(ally)
+					if not wounded.is_empty():
+						wounded.sort_custom(func(a, b): return a.hp < b.hp)
+						recipient = wounded[0]
+				else:
+					var teammates: Array[BattlePlayer] = ai_allies.filter(func(p): return p != owner)
+					if not teammates.is_empty():
+						teammates.sort_custom(func(a, b): return a.hand.size() < b.hand.size())
+						if teammates[0].hand.size() < owner.hand.size():
+							recipient = teammates[0]
+			private_card_assignments[index] = player_index(recipient)
 		_schedule("_perform_ai_confirm_private_cards", 0.2)
 
 
@@ -2468,10 +2518,16 @@ func _finish_private_card_assignment() -> void:
 
 
 func _begin_guanxing(owner: BattlePlayer, continuation: Callable) -> void:
+	var living_count: int = 0
+	for p: BattlePlayer in players:
+		if not p.is_dying() and p.hp > 0:
+			living_count += 1
+	var view_count: int = mini(5, living_count)
 	private_cards.clear()
-	for _i: int in 2:
+	for _i: int in view_count:
 		var card: Card = _draw_one_from_pile()
-		if card != null: private_cards.append(card)
+		if card != null:
+			private_cards.append(card)
 	if private_cards.is_empty():
 		_call_safe(continuation)
 		return
@@ -2483,8 +2539,54 @@ func _begin_guanxing(owner: BattlePlayer, continuation: Callable) -> void:
 	_add_log("%s 发动【观星】，观看牌堆顶%d张牌并调整顺序。" % [owner.player_name, private_cards.size()])
 	_emit_state()
 	if owner.is_ai:
-		deck_reorder_top.sort_custom(func(a: Card, b: Card) -> bool: return _ai_card_value(a) > _ai_card_value(b))
+		_perform_ai_deck_reorder_logic(owner)
 		_schedule("_perform_ai_confirm_deck_reorder", 0.2)
+
+
+func _perform_ai_deck_reorder_logic(owner: BattlePlayer) -> void:
+	var pool: Array[Card] = private_cards.duplicate()
+	var top_cards: Array[Card] = []
+	var bottom_cards: Array[Card] = []
+
+	var tricks_to_judge: Array[Card] = owner.delayed_tricks_in_judgement_order()
+	for delayed: Card in tricks_to_judge:
+		if pool.is_empty():
+			break
+		var picked: Card = null
+		match delayed.rule_card_type():
+			Card.CardType.INDULGENCE:
+				for card: Card in pool:
+					if card.suit == Card.Suit.HEART:
+						picked = card
+						break
+			Card.CardType.SUPPLY_SHORTAGE:
+				for card: Card in pool:
+					if card.suit == Card.Suit.CLUB:
+						picked = card
+						break
+			Card.CardType.LIGHTNING:
+				for card: Card in pool:
+					if not (card.suit == Card.Suit.SPADE and card.rank >= 2 and card.rank <= 9):
+						picked = card
+						break
+
+		if picked != null:
+			pool.erase(picked)
+			top_cards.append(picked)
+		else:
+			pool.sort_custom(func(a: Card, b: Card) -> bool: return _ai_card_value(a) < _ai_card_value(b))
+			picked = pool.pop_front()
+			top_cards.append(picked)
+
+	pool.sort_custom(func(a: Card, b: Card) -> bool: return _ai_card_value(a) > _ai_card_value(b))
+	for card: Card in pool:
+		if _ai_card_value(card) >= 45:
+			top_cards.append(card)
+		else:
+			bottom_cards.append(card)
+
+	deck_reorder_top = top_cards
+	deck_reorder_bottom = bottom_cards
 
 
 func request_confirm_deck_reorder(top_indices: Array[int], bottom_indices: Array[int] = []) -> void:
@@ -3104,12 +3206,16 @@ func _select_target(hand_index: int, card: Card) -> void:
 func _is_valid_trick_target(card: Card, source: BattlePlayer, target: BattlePlayer) -> bool:
 	match card.card_type:
 		Card.CardType.DISMANTLE:
-			return target != source and target.total_cards_in_hand_and_equipment() > 0
+			return (
+				target != source
+				and target.has_any_card_in_play_area()
+				and _skills_allow_target(source, target, Card.CardType.DISMANTLE)
+			)
 		Card.CardType.STEAL:
 			return (
 				target != source
-				and (_trick_distance_free(source, Card.CardType.STEAL) or distance_between(source, target) == 1)
-				and not target.hand.is_empty()
+				and (_trick_distance_free(source, Card.CardType.STEAL) or distance_between(source, target) <= 1)
+				and target.has_any_card_in_play_area()
 				and _skills_allow_target(source, target, Card.CardType.STEAL)
 			)
 		Card.CardType.DUEL:
@@ -3117,17 +3223,24 @@ func _is_valid_trick_target(card: Card, source: BattlePlayer, target: BattlePlay
 		Card.CardType.BORROW_SWORD:
 			return (
 				target != source
-				and (_trick_distance_free(source, Card.CardType.BORROW_SWORD) or distance_between(source, target) == 1)
 				and target.weapon != null
-				and can_slash_target(target, source)
+				and _skills_allow_target(source, target, Card.CardType.BORROW_SWORD)
+				and _has_valid_borrow_slash_target(source, target)
 			)
 		Card.CardType.FIRE_ATTACK:
 			return not target.hand.is_empty()
-		Card.CardType.INDULGENCE, Card.CardType.SUPPLY_SHORTAGE:
+		Card.CardType.INDULGENCE:
 			return (
 				target != source
-				and not target.has_delayed_trick(card.card_type)
-				and _skills_allow_target(source, target, card.card_type)
+				and not target.has_delayed_trick(Card.CardType.INDULGENCE)
+				and _skills_allow_target(source, target, Card.CardType.INDULGENCE)
+			)
+		Card.CardType.SUPPLY_SHORTAGE:
+			return (
+				target != source
+				and (_trick_distance_free(source, Card.CardType.SUPPLY_SHORTAGE) or distance_between(source, target) <= 1)
+				and not target.has_delayed_trick(Card.CardType.SUPPLY_SHORTAGE)
+				and _skills_allow_target(source, target, Card.CardType.SUPPLY_SHORTAGE)
 			)
 	return target != source
 
@@ -3295,14 +3408,15 @@ func _play_equipment(user: BattlePlayer, hand_index: int) -> void:
 	var equipment: Card = user.hand[hand_index]
 	var replaced: Card = user.equipment_in_slot(equipment.equipment_slot)
 	var slot_zone: int = _slot_to_zone(equipment.equipment_slot)
-	var excluded: Array[Card] = []
+	## 同槽旧装备先进入有所有权的处理区。若最后一张手牌装备后插入【连营】等触发，
+	## 旧装备也不会只悬挂在 continuation 的绑定参数中而造成可观察帧的牌数缺口。
 	if replaced != null:
-		excluded.append(replaced)
+		user.remove_equipment(equipment.equipment_slot)
+		_move_card_to_processing(replaced)
 	_move_cards(
 		user, user, [equipment], slot_zone, "装备【%s】" % equipment.display_name,
 		null, null, user,
-		Callable(self, "_after_equipment_placed").bind(user, equipment, replaced),
-		excluded
+		Callable(self, "_after_equipment_placed").bind(user, equipment, replaced)
 	)
 
 
@@ -3496,8 +3610,34 @@ func _begin_liuli(ctx: SlashTargetContextScript, owner: BattlePlayer, continuati
 		_call_safe(continuation)
 		return
 	if owner.is_ai:
-		_add_log("【流离】AI 判断没有合法转移目标，放弃。")
-		_call_safe(continuation)
+		var cost_card: Card = null
+		for card: Card in owner.all_equipment():
+			cost_card = card
+			break
+		if cost_card == null and not owner.hand.is_empty():
+			cost_card = owner.hand[0]
+		if cost_card == null:
+			_add_log("【流离】AI 没有可弃置的牌作为代价，放弃。")
+			_call_safe(continuation)
+			return
+
+		var target: BattlePlayer = null
+		for candidate: BattlePlayer in candidates:
+			if candidate.is_ai != owner.is_ai:
+				target = candidate
+				break
+		if target == null:
+			target = candidates[0]
+
+		_add_log("%s 发动【流离】，转移【杀】的目标给 %s。" % [owner.player_name, target.player_name])
+		owner.record_skill_use(owner.get_skill(&"liuli"))
+		_liuli_slash_context = null
+		_liuli_continue = Callable()
+		_move_cards(
+			owner, owner, [cost_card], CardZone.DISCARD, "作为【流离】代价",
+			null, owner.get_skill(&"liuli"), null,
+			Callable(self, "_apply_liuli_transfer").bind(owner, ctx, target, continuation)
+		)
 		return
 	skill_owner = owner
 	skill_actor = owner
@@ -4030,6 +4170,24 @@ func _apply_draw_two() -> void:
 	_finish_nullifiable_effect()
 
 
+func _ai_best_zone_choice(source: BattlePlayer, target: BattlePlayer, codes: Array[String]) -> int:
+	if source == null or target == null or codes.is_empty():
+		return 0
+	var is_ally: bool = (source.role_name == target.role_name)
+	if is_ally:
+		for i: int in codes.size():
+			if codes[i].begins_with("delayed_"):
+				return i
+	else:
+		for i: int in codes.size():
+			if codes[i] == "weapon" or codes[i] == "armor" or codes[i] == "horse_plus" or codes[i] == "horse_minus":
+				return i
+		for i: int in codes.size():
+			if codes[i] == "hand":
+				return i
+	return 0
+
+
 func _apply_dismantle() -> void:
 	var target: BattlePlayer = _effect_target
 	_zone_choice_codes.clear()
@@ -4040,10 +4198,19 @@ func _apply_dismantle() -> void:
 	for entry: Dictionary in _equipment_choice_entries(target):
 		_zone_choice_codes.append(entry["code"])
 		labels.append("弃置%s【%s】" % [entry["slot_name"], (entry["card"] as Card).display_name])
+	for delayed: Card in target.delayed_tricks_in_judgement_order():
+		_zone_choice_codes.append("delayed_%d" % int(delayed.rule_card_type()))
+		labels.append("弃置判定区【%s】" % delayed.rule_display_name())
+	if labels.is_empty():
+		_finish_nullifiable_effect()
+		return
 	if labels.size() == 1:
 		_resolve_dismantle_choice(0)
 	else:
-		_show_choices(_effect_source, labels, Callable(self, "_resolve_dismantle_choice"))
+		if _effect_source.is_ai:
+			_resolve_dismantle_choice(_ai_best_zone_choice(_effect_source, _effect_target, _zone_choice_codes))
+		else:
+			_show_choices(_effect_source, labels, Callable(self, "_resolve_dismantle_choice"))
 
 
 func _resolve_dismantle_choice(option_index: int) -> void:
@@ -4060,6 +4227,19 @@ func _resolve_dismantle_choice(option_index: int) -> void:
 			"被【过河拆桥】弃置", _effect_card, null, null,
 			Callable(self, "_finish_nullifiable_effect")
 		)
+		return
+	if code.begins_with("delayed_"):
+		var delayed_type_int: int = code.trim_prefix("delayed_").to_int()
+		var removed: Card = _effect_target.remove_delayed_trick(delayed_type_int)
+		if removed != null:
+			_add_log("%s 弃置了 %s 判定区的【%s】。" % [_effect_source.player_name, _effect_target.player_name, removed.rule_display_name()])
+			_move_cards(
+				_effect_target, _effect_source, [removed], CardZone.DISCARD,
+				"被【过河拆桥】弃置", _effect_card, null, null,
+				Callable(self, "_finish_nullifiable_effect"), [], [removed]
+			)
+			return
+		_finish_nullifiable_effect()
 		return
 	var slot: int = _slot_from_code(code)
 	var equipment: Card = _effect_target.equipment_in_slot(slot)
@@ -4079,18 +4259,73 @@ func _resolve_dismantle_choice(option_index: int) -> void:
 
 
 func _apply_steal() -> void:
-	if _effect_target.hand.is_empty():
-		_add_log("目标已无手牌，【顺手牵羊】无可获得之牌。")
+	var target: BattlePlayer = _effect_target
+	_zone_choice_codes.clear()
+	var labels: Array[String] = []
+	if not target.hand.is_empty():
+		_zone_choice_codes.append("hand")
+		labels.append("获得其随机手牌")
+	for entry: Dictionary in _equipment_choice_entries(target):
+		_zone_choice_codes.append(entry["code"])
+		labels.append("获得%s【%s】" % [entry["slot_name"], (entry["card"] as Card).display_name])
+	for delayed: Card in target.delayed_tricks_in_judgement_order():
+		_zone_choice_codes.append("delayed_%d" % int(delayed.rule_card_type()))
+		labels.append("获得判定区【%s】" % delayed.rule_display_name())
+	if labels.is_empty():
 		_finish_nullifiable_effect()
 		return
-	var index: int = randi_range(0, _effect_target.hand.size() - 1)
-	var stolen: Card = _effect_target.hand[index]
-	_add_log("%s 从 %s 获得一张手牌。" % [_effect_source.player_name, _effect_target.player_name])
-	_move_cards(
-		_effect_target, _effect_source, [stolen], CardZone.HAND,
-		"被【顺手牵羊】获得", _effect_card, null, _effect_source,
-		Callable(self, "_finish_nullifiable_effect")
-	)
+	if labels.size() == 1:
+		_resolve_steal_choice(0)
+	else:
+		if _effect_source.is_ai:
+			_resolve_steal_choice(_ai_best_zone_choice(_effect_source, _effect_target, _zone_choice_codes))
+		else:
+			_show_choices(_effect_source, labels, Callable(self, "_resolve_steal_choice"))
+
+
+func _resolve_steal_choice(option_index: int) -> void:
+	if option_index < 0 or option_index >= _zone_choice_codes.size():
+		_finish_nullifiable_effect()
+		return
+	var code: String = _zone_choice_codes[option_index]
+	if code == "hand" and not _effect_target.hand.is_empty():
+		var index: int = randi_range(0, _effect_target.hand.size() - 1)
+		var stolen: Card = _effect_target.hand[index]
+		_add_log("%s 从 %s 获得一张手牌。" % [_effect_source.player_name, _effect_target.player_name])
+		_move_cards(
+			_effect_target, _effect_source, [stolen], CardZone.HAND,
+			"被【顺手牵羊】获得", _effect_card, null, _effect_source,
+			Callable(self, "_finish_nullifiable_effect")
+		)
+		return
+	if code.begins_with("delayed_"):
+		var delayed_type_int: int = code.trim_prefix("delayed_").to_int()
+		var stolen: Card = _effect_target.remove_delayed_trick(delayed_type_int)
+		if stolen != null:
+			_add_log("%s 获得了 %s 判定区的【%s】。" % [_effect_source.player_name, _effect_target.player_name, stolen.rule_display_name()])
+			_move_cards(
+				_effect_target, _effect_source, [stolen], CardZone.HAND,
+				"被【顺手牵羊】获得", _effect_card, null, _effect_source,
+				Callable(self, "_finish_nullifiable_effect"), [], [stolen]
+			)
+			return
+		_finish_nullifiable_effect()
+		return
+	var slot: int = _slot_from_code(code)
+	var equipment: Card = _effect_target.equipment_in_slot(slot)
+	if equipment != null:
+		_add_log("%s 获得了 %s 的【%s】。" % [
+			_effect_source.player_name,
+			_effect_target.player_name,
+			equipment.display_name,
+		])
+		_move_cards(
+			_effect_target, _effect_source, [equipment], CardZone.HAND,
+			"被【顺手牵羊】获得", _effect_card, null, _effect_source,
+			Callable(self, "_finish_nullifiable_effect")
+		)
+		return
+	_finish_nullifiable_effect()
 
 
 func _apply_duel() -> void:
@@ -4122,7 +4357,7 @@ func _apply_borrow_sword() -> void:
 		return
 	## 人类使用借刀杀人时，可指定“被出杀”的目标角色；候选多于一个时进入选择，
 	## 只有一个候选（如 1v1）时自动指定，保持旧体验。
-	if _borrow_source == player1:
+	if not _borrow_source.is_ai:
 		var candidates: Array[BattlePlayer] = _borrow_designated_candidates()
 		if candidates.size() > 1:
 			_pending_borrow_slash_target = true
@@ -4132,8 +4367,15 @@ func _apply_borrow_sword() -> void:
 			return
 		_borrow_slash_target = candidates[0] if not candidates.is_empty() else _borrow_source
 	else:
-		## AI 使用借刀杀人：总是指定自己。
-		_borrow_slash_target = _borrow_source
+		var candidates: Array[BattlePlayer] = _borrow_designated_candidates()
+		var chosen: BattlePlayer = null
+		for c: BattlePlayer in candidates:
+			if c.role_name != _borrow_source.role_name:
+				chosen = c
+				break
+		if chosen == null and not candidates.is_empty():
+			chosen = candidates[0]
+		_borrow_slash_target = chosen if chosen != null else _borrow_source
 	_enter_borrow_response()
 
 
@@ -4845,7 +5087,10 @@ func _apply_guicai_card(owner: BattlePlayer, hand_index: int) -> void:
 
 func _ai_guicai_card_index(owner: BattlePlayer, context: JudgementContextScript) -> int:
 	var current_good: bool = _judgement_is_good_for(context.effective_card, context.reason, context.judged_player)
-	var wants_good: bool = context.judged_player == owner
+	var wants_good: bool = (
+		context.judged_player != null
+		and context.judged_player.role_name == owner.role_name
+	)
 	for index: int in owner.hand.size():
 		var candidate_good: bool = _judgement_is_good_for(owner.hand[index], context.reason, context.judged_player)
 		if candidate_good == wants_good and candidate_good != current_good:
@@ -5057,6 +5302,7 @@ func _after_damage_dying_resolved(context: DamageContext) -> void:
 func _enter_dying(player: BattlePlayer, after: Callable) -> void:
 	dying_player = player
 	_dying_after = after
+	_rescue_passed.clear()
 	rescue_actor = player
 	flow_state = FlowState.DYING_RESCUE
 	_add_log("%s 进入濒死状态，需要将体力回复至 1。" % player.player_name)
@@ -5152,6 +5398,7 @@ func _check_rescue_state() -> void:
 		_add_log("%s 脱离濒死状态。" % dying_player.player_name)
 		var after: Callable = _dying_after
 		_dying_after = Callable()
+		_rescue_passed.clear()
 		rescue_actor = null
 		dying_player = null
 		_call_safe(after)
@@ -5165,29 +5412,52 @@ func _resolve_rescue_pass(actor: BattlePlayer) -> void:
 	if flow_state != FlowState.DYING_RESCUE or dying_player == null or actor == null:
 		return
 	_add_log("%s 放弃救援%s。" % [actor.player_name, dying_player.player_name])
-	if actor == dying_player:
-		var next: BattlePlayer = _next_rescue_actor(dying_player)
-		if next != null:
-			rescue_actor = next
-			if _rescue_options(next).is_empty():
-				_add_log("%s 没有可用救援牌，放弃。" % next.player_name)
-				_resolve_rescue_pass(next)
-				return
-			_emit_state()
-			if next.is_ai:
-				_perform_ai_rescue()
+	if actor not in _rescue_passed:
+		_rescue_passed.append(actor)
+	var next: BattlePlayer = _next_unpassed_rescue_actor(actor)
+	if next != null:
+		rescue_actor = next
+		if _rescue_options(next).is_empty():
+			_add_log("%s 没有可用救援牌，放弃。" % next.player_name)
+			_resolve_rescue_pass(next)
 			return
+		_emit_state()
+		if next.is_ai:
+			_perform_ai_rescue()
+		return
 	_declare_death(dying_player)
+
+
+## 从当前救援者之后按座次查找尚未放弃的角色；多人局必须询问完整一圈。
+func _next_unpassed_rescue_actor(actor: BattlePlayer) -> BattlePlayer:
+	if actor == null or players.is_empty():
+		return null
+	var start: int = player_index(actor)
+	if start < 0:
+		return null
+	for offset: int in range(1, players.size() + 1):
+		var candidate: BattlePlayer = players[(start + offset) % players.size()]
+		if candidate in _rescue_passed:
+			continue
+		if candidate != dying_player and candidate.is_dying():
+			continue
+		return candidate
+	return null
 
 
 func _declare_death(loser: BattlePlayer) -> void:
 	_add_log("%s 阵亡。" % loser.player_name)
 	if check_battle_result():
+		_dying_after = Callable()
+		_rescue_passed.clear()
+		rescue_actor = null
+		dying_player = null
 		return
 	## 仍有存活敌人：战斗继续。恢复原结算链（伤害队列/技能 continuation），
 	## 死亡角色由回合状态机与目标合法性检查自动跳过。
 	var after: Callable = _dying_after
 	_dying_after = Callable()
+	_rescue_passed.clear()
 	rescue_actor = null
 	dying_player = null
 	_emit_state()
@@ -5432,6 +5702,19 @@ func _current_response_player() -> BattlePlayer:
 	return null
 
 
+func _ai_rende_target(owner: BattlePlayer) -> BattlePlayer:
+	var allies: Array[BattlePlayer] = []
+	for player: BattlePlayer in living_players():
+		if player != owner and player.role_name == owner.role_name:
+			allies.append(player)
+	if allies.is_empty():
+		return null
+	allies.sort_custom(func(a: BattlePlayer, b: BattlePlayer) -> bool:
+		return a.hand.size() < b.hand.size()
+	)
+	return allies[0]
+
+
 func _perform_ai_play() -> void:
 	if flow_state != FlowState.PLAY_ACTIVE or phase != Phase.PLAY or not current_player().is_ai:
 		return
@@ -5453,29 +5736,131 @@ func _perform_ai_play() -> void:
 			_play_peach(ai, peach_index)
 			return
 
-	var jieyin: Skill = ai.get_skill(&"jieyin")
-	if jieyin != null and can_use_skill(ai, jieyin):
+	## AI【仁德】只向同阵营角色交牌，并且每阶段至多推进到首次两牌回复，保证动作有界。
+	var rende: Skill = ai.get_skill(&"rende")
+	var rende_target: BattlePlayer = _ai_rende_target(ai)
+	var rende_needed: int = maxi(2 - ai.rende_given_this_phase, 1)
+	if (
+		rende != null
+		and rende_target != null
+		and ai.hp < ai.max_hp
+		and not ai.rende_recovery_consumed
+		and ai.hand.size() >= rende_needed
+		and can_use_skill(ai, rende)
+	):
+		var rende_candidates: Array[Card] = ai.hand.duplicate()
+		rende_candidates.sort_custom(func(a: Card, b: Card) -> bool:
+			return _ai_card_value(a) < _ai_card_value(b)
+		)
+		var rende_cards: Array[Card] = []
+		for index: int in rende_needed:
+			rende_cards.append(rende_candidates[index])
 		skill_owner = ai
 		skill_actor = ai
-		pending_skill = jieyin
-		pending_skill_cards = [ai.hand[0], ai.hand[1]]
-		pending_skill_targets = [enemy]
+		pending_skill = rende
+		pending_skill_cards = rende_cards
+		pending_skill_targets = [rende_target]
 		_skill_return_state = FlowState.PLAY_ACTIVE
 		_resolve_active_skill()
 		return
 
+	var jieyin: Skill = ai.get_skill(&"jieyin")
+	var jieyin_cost_candidates: Array[Card] = []
+	for card: Card in ai.hand:
+		## 【桃】保留用于濒死救援，不作为【结姻】的两牌代价。
+		if card.card_type != Card.CardType.PEACH:
+			jieyin_cost_candidates.append(card)
+	if (
+		jieyin != null
+		and can_use_skill(ai, jieyin)
+		and jieyin_cost_candidates.size() >= 2
+	):
+		var wounded_male_allies: Array[BattlePlayer] = []
+		for p: BattlePlayer in players:
+			if (
+				p != ai
+				and p.role_name == ai.role_name
+				and not p.is_dying()
+				and p.gender == GeneralDefinition.Gender.MALE
+				and p.hp < p.max_hp
+			):
+				wounded_male_allies.append(p)
+		if not wounded_male_allies.is_empty():
+			## 只治疗同阵营男性；自己满血时也可用来救治队友。
+			wounded_male_allies.sort_custom(func(a: BattlePlayer, b: BattlePlayer) -> bool:
+				return a.hp < b.hp
+			)
+			var jieyin_target: BattlePlayer = wounded_male_allies[0]
+			var jieyin_cards: Array[Card] = jieyin_cost_candidates.duplicate()
+			jieyin_cards.sort_custom(func(a: Card, b: Card) -> bool:
+				return _ai_card_value(a) < _ai_card_value(b)
+			)
+			skill_owner = ai
+			skill_actor = ai
+			pending_skill = jieyin
+			pending_skill_cards = [jieyin_cards[0], jieyin_cards[1]]
+			pending_skill_targets = [jieyin_target]
+			_skill_return_state = FlowState.PLAY_ACTIVE
+			_resolve_active_skill()
+			return
+
 	var qingnang: Skill = ai.get_skill(&"qingnang")
-	if qingnang != null and can_use_skill(ai, qingnang):
-		## 优先用青囊治疗自己，通常不治疗敌方。
-		if ai.hp < ai.max_hp:
+	if qingnang != null and can_use_skill(ai, qingnang) and not ai.hand.is_empty():
+		var wounded_allies: Array[BattlePlayer] = []
+		for p: BattlePlayer in players:
+			if p.role_name == ai.role_name and not p.is_dying() and p.hp > 0 and p.hp < p.max_hp:
+				wounded_allies.append(p)
+		if not wounded_allies.is_empty():
+			wounded_allies.sort_custom(func(a, b):
+				if a == ai: return true
+				if b == ai: return false
+				return a.hp < b.hp
+			)
+			var heal_target: BattlePlayer = wounded_allies[0]
 			skill_owner = ai
 			skill_actor = ai
 			pending_skill = qingnang
 			pending_skill_cards = [ai.hand[0]]
-			pending_skill_targets = [ai]
+			pending_skill_targets = [heal_target]
 			_skill_return_state = FlowState.PLAY_ACTIVE
 			_resolve_active_skill()
 			return
+
+	var lijian: Skill = ai.get_skill(&"lijian")
+	if lijian != null and can_use_skill(ai, lijian) and ai.total_cards_in_hand_and_equipment() >= 1:
+		var males: Array[BattlePlayer] = []
+		for p: BattlePlayer in players:
+			if p.gender == GeneralDefinition.Gender.MALE and not p.is_dying() and p.hp > 0:
+				males.append(p)
+		if males.size() >= 2:
+			var cost_card: Card = null
+			for card: Card in ai.all_equipment():
+				cost_card = card
+				break
+			if cost_card == null and not ai.hand.is_empty():
+				cost_card = ai.hand[0]
+			if cost_card != null:
+				var enemy_males: Array[BattlePlayer] = []
+				var ally_males: Array[BattlePlayer] = []
+				for p: BattlePlayer in males:
+					if p.role_name != ai.role_name:
+						enemy_males.append(p)
+					else:
+						ally_males.append(p)
+				var t1: BattlePlayer = null
+				var t2: BattlePlayer = null
+				if enemy_males.size() >= 2:
+					t1 = enemy_males[0]
+					t2 = enemy_males[1]
+				elif enemy_males.size() == 1 and not ally_males.is_empty():
+					t1 = ally_males[0]
+					t2 = enemy_males[0]
+				else:
+					t1 = males[0]
+					t2 = males[1]
+				if t1 != null and t2 != null:
+					_resolve_lijian(ai, lijian, [cost_card], t1, t2)
+					return
 
 	var zhiheng: Skill = ai.get_skill(&"zhiheng")
 	if zhiheng != null and can_use_skill(ai, zhiheng):
@@ -5555,20 +5940,24 @@ func _perform_ai_play() -> void:
 	]
 	for type: Card.CardType in harmful_types:
 		var index: int = ai.find_card(type)
-		if index >= 0 and _is_valid_trick_target(ai.hand[index], ai, enemy):
-			_use_target_trick(ai, enemy, index)
-			return
+		if index >= 0:
+			var trick_card: Card = ai.hand[index]
+			for p: BattlePlayer in enemies_of(ai):
+				if _is_valid_trick_target(trick_card, ai, p):
+					_use_target_trick(ai, p, index)
+					return
 
 	var qixi: Skill = ai.get_skill(&"qixi")
 	if (
 		qixi != null
 		and can_use_skill(ai, qixi)
-		and enemy.total_cards_in_hand_and_equipment() > 0
 	):
-		var qixi_cards: Array[Card] = _view_as_candidates(ai, qixi, Card.CardType.DISMANTLE)
-		if not qixi_cards.is_empty():
-			_execute_ai_view_as_play(qixi, qixi_cards[0], Card.CardType.DISMANTLE, enemy)
-			return
+		for p: BattlePlayer in enemies_of(ai):
+			if p.has_any_card_in_play_area():
+				var qixi_cards: Array[Card] = _view_as_candidates(ai, qixi, Card.CardType.DISMANTLE)
+				if not qixi_cards.is_empty():
+					_execute_ai_view_as_play(qixi, qixi_cards[0], Card.CardType.DISMANTLE, p)
+					return
 
 	var aoe_types: Array[Card.CardType] = [Card.CardType.BARBARIAN_INVASION, Card.CardType.ARROW_BARRAGE]
 	for type: Card.CardType in aoe_types:
@@ -5591,22 +5980,25 @@ func _perform_ai_play() -> void:
 			Callable(self, "_proceed_ai_iron_chain").bind(ai, enemy, chain_card)
 		)
 		return
+
+	var slash_target: BattlePlayer = _first_legal_slash_target(ai)
+
 	var slash_index: int = ai.find_card(Card.CardType.SLASH)
-	if slash_index >= 0 and can_use_slash_in_play(ai):
+	if slash_index >= 0 and can_use_slash_in_play(ai) and slash_target != null:
 		var wine_index: int = ai.find_card(Card.CardType.WINE)
 		if wine_index >= 0 and not ai.wine_active:
 			_play_wine(ai, wine_index)
 			return
-		_play_slash(ai, enemy, slash_index)
+		_play_slash(ai, slash_target, slash_index)
 		return
 	for skill: Skill in ai.skills:
 		if skill.activation_mode != Skill.ActivationMode.VIEW_AS:
 			continue
 		var slash_cards: Array[Card] = _view_as_candidates(ai, skill, Card.CardType.SLASH)
-		if not slash_cards.is_empty() and can_use_slash_in_play(ai):
-			_execute_ai_view_as_play(skill, slash_cards[0], Card.CardType.SLASH, enemy)
+		if not slash_cards.is_empty() and can_use_slash_in_play(ai) and slash_target != null:
+			_execute_ai_view_as_play(skill, slash_cards[0], Card.CardType.SLASH, slash_target)
 			return
-	if can_use_serpent_spear(ai):
+	if can_use_serpent_spear(ai) and slash_target != null:
 		_use_serpent_spear(ai)
 		return
 	_finish_play_phase()
@@ -5652,7 +6044,7 @@ func can_owner_deal_attack_damage(owner: BattlePlayer) -> bool:
 	if owner == null or owner.is_dying():
 		return false
 	var has_slash_target: bool = false
-	for target: BattlePlayer in _potential_targets_for(owner):
+	for target: BattlePlayer in enemies_of(owner):
 		if can_slash_target(owner, target):
 			has_slash_target = true
 			break
@@ -5944,6 +6336,9 @@ func _move_cards(
 		if card == null:
 			continue
 		if card in pre_removed:
+			## 预移除牌可能暂存在处理区（装备替换），也可能已从判定区摘下。
+			## 放入目标区域前先解除显式临时所有权，避免同一实体重复计数。
+			_remove_processing_card(card)
 			_place_card_in_zone(card, to_zone, owner if dest_player == null else dest_player)
 			moved.append(card)
 			continue
@@ -6165,7 +6560,7 @@ func liuli_transfer_candidates(defender: BattlePlayer, slash_context: RefCounted
 			continue
 		if player.is_dying():
 			continue
-		if not can_slash_target(ctx.source, player):
+		if not _skills_allow_target(ctx.source, player, Card.CardType.SLASH):
 			continue
 		if distance_between(defender, player) > attack_range(defender):
 			continue
@@ -6295,15 +6690,38 @@ func _proceed_serpent_spear(user: BattlePlayer, paid: Array[Card], play_use: boo
 		)
 		_accept_effective_response(response_context, response_origin)
 		return
-	## 出牌阶段视为【杀】：多人局让玩家明确选择目标，避免写死第一个反贼。
-	if user == player1 and living_enemies().size() > 1:
+	## 出牌阶段视为【杀】：多人局只让人类玩家明确选择；AI 必须直接推进目标选择。
+	if not user.is_ai and user == player1 and living_enemies().size() > 1:
 		_pending_serpent_spear = [user, paid]
 		selected_hand_index = -1
 		flow_state = FlowState.SELECTING_TARGET
 		_add_log("请选择【丈八蛇矛】视为【杀】的目标。")
 		_emit_state()
 		return
-	_fire_serpent_spear_slash(user, paid, _default_attack_target(user))
+	var target: BattlePlayer = _first_legal_slash_target(user) if user.is_ai else _default_attack_target(user)
+	_fire_serpent_spear_slash(user, paid, target)
+
+
+## AI 的【杀】目标必须同时满足阵营与当前距离/技能限制。
+func _first_legal_slash_target(user: BattlePlayer) -> BattlePlayer:
+	for target: BattlePlayer in enemies_of(user):
+		if can_slash_target(user, target):
+			return target
+	return null
+
+
+## 看门狗兜底：旧回调或异步触发若令 AI 遗留在选目标状态，主动完成或取消选择。
+func _perform_ai_target_selection() -> void:
+	if flow_state != FlowState.SELECTING_TARGET or not current_player().is_ai:
+		return
+	if not _pending_serpent_spear.is_empty():
+		var user: BattlePlayer = _pending_serpent_spear[0]
+		if user != null and user.is_ai:
+			var target: BattlePlayer = _first_legal_slash_target(user)
+			if target != null:
+				_resolve_serpent_spear_target(player_index(target))
+				return
+	request_cancel_selection()
 
 
 func _fire_serpent_spear_slash(user: BattlePlayer, paid: Array[Card], target: BattlePlayer) -> void:
@@ -6353,6 +6771,43 @@ func _refill_draw_pile() -> void:
 	discard_pile.clear()
 	draw_pile.shuffle()
 	_add_log("牌堆已空，洗混弃牌堆形成新的摸牌堆。")
+
+
+## 统计当前仍由对局持有的唯一实体牌，包含观星/遗计、五谷和判定等临时区域。
+func tracked_card_count() -> int:
+	var seen: Dictionary = {}
+	_track_card_array(seen, draw_pile)
+	_track_card_array(seen, discard_pile)
+	_track_card_array(seen, processing_cards)
+	_track_card_array(seen, revealed_cards)
+	_track_card_array(seen, private_cards)
+	for player: BattlePlayer in players:
+		_track_card_array(seen, player.hand)
+		_track_card_array(seen, player.all_equipment())
+		_track_card(seen, player.indulgence_card)
+		_track_card(seen, player.supply_shortage_card)
+		_track_card(seen, player.lightning_card)
+	if judgement_context != null:
+		_track_card(seen, judgement_context.original_card)
+		_track_card(seen, judgement_context.effective_card)
+		_track_card_array(seen, judgement_context.replaced_cards)
+	_track_card(seen, _judging_card)
+	_track_card(seen, _judged_delayed_card)
+	return seen.size()
+
+
+func card_count_invariant_holds() -> bool:
+	return match_card_count > 0 and tracked_card_count() == match_card_count
+
+
+func _track_card_array(seen: Dictionary, cards: Array) -> void:
+	for value: Variant in cards:
+		_track_card(seen, value as Card)
+
+
+func _track_card(seen: Dictionary, card: Card) -> void:
+	if card != null:
+		seen[card.get_instance_id()] = true
 
 
 func _selected_card_name() -> String:

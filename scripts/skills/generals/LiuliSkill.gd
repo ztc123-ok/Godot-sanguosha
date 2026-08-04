@@ -1,4 +1,4 @@
-﻿class_name LiuliSkill
+class_name LiuliSkill
 extends Skill
 ## 流离：当你成为【杀】的目标时，你可以弃置一张手牌或装备牌，将此【杀】转移给攻击范围内另一名合法目标。
 ## 当前严格双人局中来源不能成为自己【杀】的目标，因此通常没有合法转移目标。
@@ -23,9 +23,12 @@ func can_trigger(context: RefCounted, game: Node, owner: Node) -> bool:
 		return false
 	return not game.liuli_transfer_candidates(owner, ctx).is_empty()
 
-func should_ai_activate(_context: RefCounted, _game: Node, _owner: Node) -> bool:
-	## 双人局无合法转移目标，AI 不尝试发动。
-	return false
+func should_ai_activate(context: RefCounted, game: Node, owner: Node) -> bool:
+	var ctx := context as SlashTargetContextScript
+	if ctx == null or owner == null or game == null:
+		return false
+	var candidates: Array = game.liuli_transfer_candidates(owner, ctx)
+	return not candidates.is_empty()
 
 func build_resolution_request(_context: RefCounted, _game: Node, _owner: Node) -> Dictionary:
 	return {"action": "liuli"}

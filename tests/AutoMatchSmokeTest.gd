@@ -81,7 +81,8 @@ func _test_idle_deadlock_recovery() -> void:
 	game.current_player_index = 0
 	game.watchdog_interval = 0.15
 	var guard: int = 0
-	while game.turn_number == 0 and guard < 400:
+	var deadline_ms: int = Time.get_ticks_msec() + 1000
+	while game.turn_number == 0 and guard < 4000 and Time.get_ticks_msec() < deadline_ms:
 		await get_tree().process_frame
 		guard += 1
 	_expect(game.turn_number >= 1, "IDLE 开局死锁被看门狗自愈（补开首回合）")
@@ -150,6 +151,8 @@ func _run_fuzz() -> void:
 			g2 = all_generals[(all_generals.find(g1) + 1) % all_generals.size()]
 		var s1: Array[StringName] = _random_skills(rng, all_skills)
 		var s2: Array[StringName] = _random_skills(rng, all_skills)
+		s1 = _without_excluded_skill_combo(g1, s1)
+		s2 = _without_excluded_skill_combo(g2, s2)
 		game.start_automated_match(g1, g2, s1, s2)
 		var start_turn: int = game.turn_number
 		## 完整推进本局：直到 GAME_OVER，或至少推进 8 个回合（充分暴露后期
@@ -185,8 +188,23 @@ func _random_skills(rng: RandomNumberGenerator, all_skills: Array[StringName]) -
 	var count: int = rng.randi_range(0, 3)
 	var picked: Array[StringName] = []
 	for _index: int in count:
-		picked.append(all_skills[rng.randi_range(0, all_skills.size() - 1)])
+		var candidate: StringName = all_skills[rng.randi_range(0, all_skills.size() - 1)]
+		if candidate not in picked:
+			picked.append(candidate)
 	return picked
+
+
+## 测试协议明确排除同一角色同时拥有【洛神】与【鬼才】的非常规组合。
+func _without_excluded_skill_combo(general_id: StringName, extra_skills: Array[StringName]) -> Array[StringName]:
+	var result: Array[StringName] = extra_skills.duplicate()
+	var combined: Array[StringName] = GeneralFactory.skill_ids_of(general_id)
+	combined.append_array(result)
+	if &"luoshen" in combined and &"guicai" in combined:
+		if &"guicai" in result:
+			result.erase(&"guicai")
+		else:
+			result.erase(&"luoshen")
+	return result
 
 
 func _expect(condition: bool, description: String) -> void:

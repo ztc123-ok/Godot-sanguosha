@@ -245,8 +245,9 @@ func _test_qicai() -> void:
 	_expect(game.can_play_trick(borrow, p1), "奇才令借刀杀人无视距离限制")
 	_expect(game._is_valid_trick_target(borrow, p1, p2), "奇才后借刀杀人目标合法")
 	_set_hand(p2, [])
-	_expect(not game._is_valid_trick_target(steal, p1, p2), "奇才不取消顺手牵羊需要目标有手牌的限制")
 	p2.weapon = null
+	p2.horse_plus = null
+	_expect(not game._is_valid_trick_target(steal, p1, p2), "奇才不取消顺手牵羊需要目标任一区域有牌的限制")
 	_expect(not game._is_valid_trick_target(borrow, p1, p2), "奇才不取消借刀需要目标有武器的限制")
 
 
@@ -415,6 +416,29 @@ func _test_lianying() -> void:
 	_expect(game.flow_state == GameManager.FlowState.SKILL_CONFIRM and game.pending_skill.id == &"lianying", "作为技能代价失去最后手牌后询问连营")
 	game.request_confirm_skill()
 	_expect(p1.hand.size() == 1, "技能代价后的连营摸牌")
+	## 最后一张手牌替换同槽装备：旧装备须在连营等待帧仍属于处理区，牌数严格守恒。
+	_prepare(&"luxun", &"xiahoudun")
+	p2.is_ai = false
+	var old_weapon := QinggangSword.new()
+	var new_weapon := Crossbow.new()
+	p1.weapon = old_weapon
+	_set_hand(p1, [new_weapon])
+	_set_draw_top_first([DodgeCard.new()])
+	var before_replace_count: int = game.tracked_card_count()
+	game._play_equipment(p1, 0)
+	_expect(
+		game.flow_state == GameManager.FlowState.SKILL_CONFIRM
+		and game.pending_skill.id == &"lianying"
+		and old_weapon in game.processing_cards
+		and game.tracked_card_count() == before_replace_count,
+		"陆逊最后手牌替换装备进入连营确认时旧装备仍在处理区且牌数守恒"
+	)
+	game.request_confirm_skill()
+	_expect(
+		p1.weapon == new_weapon and old_weapon in game.discard_pile
+		and old_weapon not in game.processing_cards,
+		"连营结束后装备替换继续结算且旧装备进入弃牌堆"
+	)
 
 func _test_jieyin() -> void:
 	## 男性且受伤的对手合法，两张手牌原子支付，双方回复
@@ -453,6 +477,26 @@ func _test_jieyin() -> void:
 	game.request_skill_toggle_hand_card(0)
 	game.request_cancel_skill()
 	_expect(keep in p1.hand and p1.hand.size() == 2, "取消结姻不弃牌")
+	## 支付后由连营插入异步触发；即使目标期间回复满体力，已锁定的结姻仍须完整收尾。
+	_prepare(&"sunshangxiang", &"xiahoudun")
+	p2.is_ai = false
+	p1.add_skill_id(&"lianying")
+	p1.hp = 2; p1.hp_changed.emit(p1.hp, p1.max_hp)
+	p2.hp = 3; p2.hp_changed.emit(p2.hp, p2.max_hp)
+	var locked1 := SlashCard.new(); var locked2 := DodgeCard.new()
+	_set_hand(p1, [locked1, locked2]); _set_draw_top_first([WineCard.new()])
+	game.request_begin_skill(&"jieyin")
+	game.request_skill_toggle_hand_card(0); game.request_skill_toggle_hand_card(1)
+	game.request_confirm_skill_cards(); game.request_skill_target(1)
+	_expect(game.flow_state == GameManager.FlowState.SKILL_CONFIRM and game.pending_skill.id == &"lianying", "结姻支付后可串行处理失去最后手牌触发")
+	p2.recover(1)
+	game.request_confirm_skill()
+	_expect(
+		p1.hp == 3 and p2.hp == p2.max_hp and p1.hand.size() == 1
+		and locked1 in game.discard_pile and locked2 in game.discard_pile
+		and game.flow_state == GameManager.FlowState.PLAY_ACTIVE,
+		"结姻支付后锁定目标并在异步触发后完整结算、清理上下文"
+	)
 
 
 func _test_xiaoji() -> void:
@@ -779,14 +823,19 @@ func _test_third_batch_ai() -> void:
 	_expect(game.flow_state == GameManager.FlowState.SKILL_CONFIRM and game.pending_skill.id == &"lianying", "AI 陆逊使用最后手牌进入连营询问")
 	game._perform_ai_skill_confirm()
 	_expect(p2.hand.size() == 1, "AI 连营默认发动摸一张")
-	## AI 孙尚香：结姻合理发动
+	## AI 孙尚香：1v1 无队友且自己满血时，不为敌方主公发动负收益结姻
 	_prepare(&"xiahoudun", &"sunshangxiang", 1)
 	p1.is_ai = false
 	p1.hp = 2; p1.hp_changed.emit(p1.hp, p1.max_hp)
-	_set_hand(p2, [SlashCard.new(), DodgeCard.new(), WineCard.new(), PeachCard.new()])
+	var keep_dodge1 := DodgeCard.new(); var keep_dodge2 := DodgeCard.new()
+	var keep_null1 := NullificationCard.new(); var keep_null2 := NullificationCard.new()
+	_set_hand(p2, [keep_dodge1, keep_dodge2, keep_null1, keep_null2])
 	_set_hand(p1, [])
 	game._perform_ai_play()
-	_expect(p1.hp == 3 and p2.hp == 3 and p2.hand.size() == 2, "AI 结姻弃两张手牌并双方回复")
+	_expect(
+		p1.hp == 2 and p2.hp == p2.max_hp and p2.hand.size() == 4,
+		"满血 AI 孙尚香不会弃两张牌为敌方回复体力"
+	)
 	## AI 华佗：自己濒死回合外急救自救
 	_prepare(&"xiahoudun", &"huatuo")
 	p1.is_ai = false
