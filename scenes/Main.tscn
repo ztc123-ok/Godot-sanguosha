@@ -1,4 +1,4 @@
-[gd_scene load_steps=13 format=3]
+[gd_scene load_steps=14 format=3]
 
 [ext_resource type="Script" path="res://scripts/Main.gd" id="1_main"]
 [ext_resource type="Script" path="res://scripts/GameManager.gd" id="2_game"]
@@ -25,6 +25,18 @@ border_width_top = 1
 border_width_right = 1
 border_width_bottom = 1
 border_color = Color(0.82, 0.64, 0.32, 0.8)
+corner_radius_top_left = 8
+corner_radius_top_right = 8
+corner_radius_bottom_right = 8
+corner_radius_bottom_left = 8
+
+[sub_resource type="StyleBoxFlat" id="StyleBuffPanel"]
+bg_color = Color(0.12, 0.16, 0.2, 0.98)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.84, 0.62, 0.22, 0.9)
 corner_radius_top_left = 8
 corner_radius_top_right = 8
 corner_radius_bottom_right = 8
@@ -204,10 +216,17 @@ text = "准备开始"
 horizontal_alignment = 1
 vertical_alignment = 1
 
-[node name="EnemyContainer" type="HBoxContainer" parent="UIManager/Root/Margin/Layout"]
+[node name="EnemyScroll" type="ScrollContainer" parent="UIManager/Root/Margin/Layout"]
+custom_minimum_size = Vector2(0, 154)
+layout_mode = 2
+horizontal_scroll_mode = 1
+vertical_scroll_mode = 0
+
+[node name="EnemyContainer" type="HBoxContainer" parent="UIManager/Root/Margin/Layout/EnemyScroll"]
 unique_name_in_owner = true
 custom_minimum_size = Vector2(0, 142)
 layout_mode = 2
+size_flags_horizontal = 3
 theme_override_constants/separation = 12
 
 [node name="BattleLine" type="HBoxContainer" parent="UIManager/Root/Margin/Layout"]
@@ -279,10 +298,46 @@ layout_mode = 2
 theme_override_colors/font_color = Color(0.75, 0.9, 0.94, 1)
 text = "体力 4 / 4    手牌 4 / 上限 4"
 
-[node name="PlayerStatus" type="Label" parent="UIManager/Root/Margin/Layout/PlayerZone/PlayerMargin/PlayerRow"]
+[node name="PlayerEffects" type="VBoxContainer" parent="UIManager/Root/Margin/Layout/PlayerZone/PlayerMargin/PlayerRow"]
+custom_minimum_size = Vector2(540, 0)
+layout_mode = 2
+theme_override_constants/separation = 4
+
+[node name="BuffPanel" type="PanelContainer" parent="UIManager/Root/Margin/Layout/PlayerZone/PlayerMargin/PlayerRow/PlayerEffects"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(0, 40)
+layout_mode = 2
+theme_override_styles/panel = SubResource("StyleBuffPanel")
+
+[node name="BuffMargin" type="MarginContainer" parent="UIManager/Root/Margin/Layout/PlayerZone/PlayerMargin/PlayerRow/PlayerEffects/BuffPanel"]
+layout_mode = 2
+theme_override_constants/margin_left = 10
+theme_override_constants/margin_top = 4
+theme_override_constants/margin_right = 10
+theme_override_constants/margin_bottom = 4
+
+[node name="BuffRow" type="HBoxContainer" parent="UIManager/Root/Margin/Layout/PlayerZone/PlayerMargin/PlayerRow/PlayerEffects/BuffPanel/BuffMargin"]
+layout_mode = 2
+theme_override_constants/separation = 10
+
+[node name="BuffHeading" type="Label" parent="UIManager/Root/Margin/Layout/PlayerZone/PlayerMargin/PlayerRow/PlayerEffects/BuffPanel/BuffMargin/BuffRow"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.97, 0.76, 0.3, 1)
+theme_override_font_sizes/font_size = 14
+text = "战斗增益"
+vertical_alignment = 1
+
+[node name="BuffList" type="HBoxContainer" parent="UIManager/Root/Margin/Layout/PlayerZone/PlayerMargin/PlayerRow/PlayerEffects/BuffPanel/BuffMargin/BuffRow"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_constants/separation = 8
+
+[node name="PlayerStatus" type="Label" parent="UIManager/Root/Margin/Layout/PlayerZone/PlayerMargin/PlayerRow/PlayerEffects"]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_colors/font_color = Color(0.48, 0.77, 0.88, 1)
+theme_override_font_sizes/font_size = 13
 text = "连环：未横置 · 武器：无 · 判定区：空"
 vertical_alignment = 1
 

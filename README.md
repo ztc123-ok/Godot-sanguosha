@@ -8,6 +8,30 @@ Godot 4.6 正式版、纯 GDScript 4.x。玩家控制主公 Player1，基础 AI 
 2. 按 F6/F5 运行主场景，从序章地图进入第一战，在选将面板选择武将后点击“开始对局”。
 3. 无需第三方插件、字体或图片素材。
 
+### 开发者入口
+
+调试构建的序章地图底部提供“开发者入口”，用于集中配置：
+
+- 选择 `BattleCatalog` 中注册的任意战斗，不受章节解锁进度限制；
+- 根据战斗定义动态生成任意数量的敌方选将槽位；
+- 指定玩家以及每一名 AI 的武将，敌方战斗区域过多时可横向滚动；
+- 选择直接跳过选将开局，或停留在选将界面复核阵容。
+
+同一能力也可通过命令行复现。参数放在 Godot 的 `--` 之后：
+
+```powershell
+Godot_v4.6-stable_win64.exe --path . -- --dev-battle=prologue_2 --dev-player=simayi --dev-enemies=zhangliao,lvbu --dev-skip-selection
+```
+
+可用参数：
+
+- `--dev-battle=<battle_id>`：指定已注册的稳定战斗 ID；序章仍兼容旧参数 `1|2`；
+- `--dev-player=<general_id>`：指定玩家武将，默认 `caocao`；
+- `--dev-enemies=<id,id,...>`：按槽位顺序指定任意数量的敌方武将，未提供部分会确定性补齐；
+- `--dev-skip-selection`：直接开局；`--dev-show-selection`：停留在选将界面（默认）。
+
+开发者面板仅在调试构建中显示，正式发布流程不会暴露该入口。新增战斗的注册规范见 `docs/开发者入口架构.md`。
+
 ## 操作
 
 - 选将：点击任意武将，AI 会从剩余武将中选择；也可载入“曹操 VS 吕布”默认配置。
@@ -129,6 +153,7 @@ scripts/
 Godot_v4.6-stable_win64_console.exe --headless --path . res://tests/RuleSmokeTest.tscn
 Godot_v4.6-stable_win64_console.exe --headless --path . res://tests/SkillSmokeTest.tscn
 Godot_v4.6-stable_win64_console.exe --headless --path . res://tests/PrologueSmokeTest.tscn
+Godot_v4.6-stable_win64_console.exe --headless --path . res://tests/DeveloperLauncherTest.tscn
 ```
 
 `RuleSmokeTest` 覆盖基础牌、15 类锦囊、四装备槽、距离、装备技能、无懈链、属性伤害、判定与濒死。`SkillSmokeTest` 覆盖选将、九名武将、技能分类、处理区、虚拟牌、摸牌/伤害上下文、无双多响应和 AI 技能流程。`PrologueSmokeTest` 覆盖序章节点的线性解锁与村落入口。

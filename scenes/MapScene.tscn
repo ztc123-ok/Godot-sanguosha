@@ -81,3 +81,11 @@ layout_mode = 2
 theme_override_font_sizes/font_size = 20
 text = "进入村落"
 disabled = true
+
+[node name="DeveloperButton" type="Button" parent="Center/Flow"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(360, 46)
+layout_mode = 2
+theme_override_colors/font_color = Color(0.5, 0.88, 1, 1)
+theme_override_font_sizes/font_size = 17
+text = "开发者入口"

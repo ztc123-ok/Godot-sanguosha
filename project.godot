@@ -11,7 +11,10 @@ config/features=PackedStringArray("4.6", "GL Compatibility")
 
 [autoload]
 
+BattleCatalog="*res://scripts/battle/BattleCatalog.gd"
+BattleSession="*res://scripts/battle/BattleSession.gd"
 PrologueState="*res://scripts/PrologueState.gd"
+DeveloperLauncher="*res://scripts/DeveloperLauncher.gd"
 
 [display]
 

@@ -11,6 +11,7 @@ func _ready() -> void:
 	await _test_last_enemy_has_no_reward()
 	await _test_multiple_kills_queue_rewards_and_resume_once()
 	await _test_simultaneous_dying_chain_defers_reward()
+	await _test_buff_ui_visualization()
 
 	if failures.is_empty():
 		print("ONE_VS_MANY_BALANCE_RULE_TEST: PASS (lone army / kill reward / death-chain continuation)")
@@ -236,6 +237,35 @@ func _test_simultaneous_dying_chain_defers_reward() -> void:
 	_expect(game.flow_state == GameManager.FlowState.GAME_OVER, "同链中玩家阵亡后按统一胜负入口判负")
 	_expect(game._pending_kill_rewards.is_empty(), "玩家死亡时清除延迟奖励且从未提前弹出")
 	game.queue_free()
+	await get_tree().process_frame
+
+
+func _test_buff_ui_visualization() -> void:
+	PrologueState.active_battle = 2
+	var main: Node = load("res://scenes/Main.tscn").instantiate()
+	add_child(main)
+	await get_tree().process_frame
+	await get_tree().process_frame
+	var game: GameManager = main.get_node("GameManager")
+	var ui: UIManager = main.get_node("UIManager")
+	game.request_use_default_generals()
+	game.request_start_match()
+	ui.refresh()
+	_expect(ui.buff_panel.visible, "第二战玩家区域常驻显示独立 Buff 面板")
+	_expect(ui.buff_list.get_child_count() == 1, "【孤军】生成独立可视化徽章")
+	if ui.buff_list.get_child_count() == 1:
+		var badge: PanelContainer = ui.buff_list.get_child(0) as PanelContainer
+		var label: Label = badge.get_child(0) as Label
+		_expect(
+			label != null and label.text.contains("【孤军】") and label.text.contains("= 3 张"),
+			"Buff 徽章直接展示名称、规则公式与当前收益"
+		)
+		_expect(
+			badge.tooltip_text.contains("关卡 Buff")
+			and badge.tooltip_text.contains("每多一名敌人"),
+			"Buff tooltip 展示来源和完整描述"
+		)
+	main.queue_free()
 	await get_tree().process_frame
 
 

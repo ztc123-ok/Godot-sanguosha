@@ -3,27 +3,6 @@ extends Node
 ## 双人局唯一规则入口。
 ## 所有主动牌、响应牌、锦囊、判定、伤害和濒死均经过本状态机结算。
 
-## 各序章关卡的规则配置；关卡差异集中在此，避免散落到卡牌、技能与 UI 中。
-const BATTLE_CONFIGS := {
-	1: {
-		"enemy_count": 1,
-		"combat_modifiers": [],
-		"kill_reward": &"",
-	},
-	2: {
-		"enemy_count": 2,
-		"combat_modifiers": [
-			{
-				"id": &"lone_army",
-				"target": &"PLAYER",
-				"source": &"BATTLE",
-				"draw_bonus_per_extra_enemy": 1,
-			},
-		],
-		"kill_reward": &"heal_one_or_draw_two",
-	},
-}
-
 const EquipmentScript = preload("res://scripts/cards/equipment/Equipment.gd")
 const JudgementContextScript = preload("res://scripts/skills/JudgementContext.gd")
 const TriggerEntryScript = preload("res://scripts/skills/TriggerEntry.gd")
@@ -288,7 +267,7 @@ var _pending_ai_action_count: int = 0
 
 
 func _ready() -> void:
-	## 根据当前序章关卡生成敌人阵容，再组合出全员列表。
+	## 根据当前战斗目录定义生成敌人阵容，再组合出全员列表。
 	_ensure_enemy_players()
 	players = [player1]
 	players.append_array(enemies)
@@ -301,7 +280,7 @@ func _ready() -> void:
 		call_deferred("begin_general_selection")
 
 
-## 根据 PrologueState.active_battle 生成敌人阵容。
+## 根据 BattleSession 当前定义生成敌人阵容。
 ## 场景固定提供 Player2，多出的敌人按需动态创建，敌人数量可继续扩展。
 func _ensure_enemy_players() -> void:
 	enemies.clear()
@@ -322,8 +301,13 @@ func enemy_count_for_current_battle() -> int:
 	return int(current_battle_config().get("enemy_count", 1))
 
 
+static func enemy_count_for_battle(battle_selector: Variant) -> int:
+	var battle_id := BattleCatalog.resolve_battle_id(battle_selector)
+	return int(BattleCatalog.definition(battle_id).get("enemy_count", 1))
+
+
 func current_battle_config() -> Dictionary:
-	return BATTLE_CONFIGS.get(PrologueState.active_battle, {})
+	return BattleSession.active_definition()
 
 
 ## 安装由关卡配置提供的修正。角色/场景系统以后也可直接调用 add_combat_modifier，
@@ -358,6 +342,14 @@ func combat_modifier_statuses_for(player: BattlePlayer) -> PackedStringArray:
 	for modifier: RefCounted in combat_modifiers:
 		if modifier.has_method("applies_to") and modifier.applies_to(player):
 			result.append(str(modifier.status_text(self, player)))
+	return result
+
+
+func combat_modifier_ui_data_for(player: BattlePlayer) -> Array[Dictionary]:
+	var result: Array[Dictionary] = []
+	for modifier: RefCounted in combat_modifiers:
+		if modifier.has_method("applies_to") and modifier.applies_to(player):
+			result.append(modifier.ui_data(self, player))
 	return result
 
 
@@ -543,6 +535,13 @@ func _default_attack_target(user: BattlePlayer) -> BattlePlayer:
 
 ## 为未配将、武将无效或重复的角色从武将池补选，保证全员武将互不相同。
 func _ensure_distinct_generals() -> void:
+	if bool(current_battle_config().get("allow_duplicate_generals", false)):
+		var fallback_ids := GeneralFactory.all_general_ids()
+		for index: int in players.size():
+			var player: BattlePlayer = players[index]
+			if player.general_id == &"" or not GeneralFactory.is_valid_id(player.general_id):
+				player.assign_general(GeneralFactory.create_general(fallback_ids[index % fallback_ids.size()]))
+		return
 	var used: Array[StringName] = []
 	for player: BattlePlayer in players:
 		if (
@@ -810,15 +809,64 @@ func request_select_general(general_id: StringName) -> void:
 
 
 func setup_generals(player1_general_id: StringName, player2_general_id: StringName) -> bool:
-	if (
-		not GeneralFactory.is_valid_id(player1_general_id)
-		or not GeneralFactory.is_valid_id(player2_general_id)
-		or player1_general_id == player2_general_id
-	):
+	return setup_all_generals(player1_general_id, [player2_general_id])
+
+
+## 确定性配置完整战斗阵容。缺省敌方槽位按武将定义顺序补齐，供开发入口与测试共用。
+func setup_all_generals(
+	player_general_id: StringName,
+	enemy_general_ids: Array[StringName] = []
+) -> bool:
+	if not GeneralFactory.is_valid_id(player_general_id) or enemy_general_ids.size() > enemies.size():
 		return false
+	var allow_duplicates := bool(current_battle_config().get("allow_duplicate_generals", false))
+	var used: Array[StringName] = [player_general_id]
+	for general_id: StringName in enemy_general_ids:
+		if not GeneralFactory.is_valid_id(general_id) or (not allow_duplicates and general_id in used):
+			return false
+		used.append(general_id)
+	var available: Array[StringName] = GeneralFactory.all_general_ids()
+	if not allow_duplicates:
+		for general_id: StringName in used:
+			available.erase(general_id)
 	_action_generation += 1
-	player1.assign_general(GeneralFactory.create_general(player1_general_id))
-	player2.assign_general(GeneralFactory.create_general(player2_general_id))
+	player1.assign_general(GeneralFactory.create_general(player_general_id))
+	for index: int in enemies.size():
+		var selected_id: StringName
+		if index < enemy_general_ids.size():
+			selected_id = enemy_general_ids[index]
+		elif GeneralFactory.DEFAULT_AI_GENERAL in available:
+			selected_id = GeneralFactory.DEFAULT_AI_GENERAL
+		else:
+			if available.is_empty():
+				return false
+			selected_id = available[0]
+		if not allow_duplicates:
+			available.erase(selected_id)
+		enemies[index].assign_general(GeneralFactory.create_general(selected_id))
+	return true
+
+
+## 公开的预配置开局接口：可停留在选将界面复核，也可直接跳过选将开始对局。
+func prepare_match_with_generals(
+	player_general_id: StringName,
+	enemy_general_ids: Array[StringName],
+	start_immediately: bool = false
+) -> bool:
+	if flow_state != FlowState.GENERAL_SELECTION:
+		begin_general_selection(false)
+	if not setup_all_generals(player_general_id, enemy_general_ids):
+		return false
+	var enemy_names: PackedStringArray = []
+	for enemy: BattlePlayer in enemies:
+		enemy_names.append("【%s】" % enemy.general_name)
+	_add_log("已载入指定阵容：主公【%s】、反贼 %s。" % [
+		player1.general_name,
+		"、".join(enemy_names),
+	])
+	_emit_state()
+	if start_immediately:
+		start_match()
 	return true
 
 

@@ -33,3 +33,17 @@ func modify_draw_count(game: Node, player: Node, current_count: int) -> int:
 func status_text(game: Node, player: Node) -> String:
 	var bonus: int = bonus_for(game, player)
 	return "孤军（摸牌+%d）" % bonus if bonus > 0 else "孤军（未触发）"
+
+
+func ui_summary(game: Node, player: Node) -> String:
+	var enemy_count: int = game.enemies_of(player).size()
+	var final_count: int = 2 + bonus_for(game, player)
+	return "【孤军】每多1名敌人摸牌+1｜当前 2 + (%d - 1) = %d 张" % [enemy_count, final_count]
+
+
+func ui_description(game: Node, player: Node) -> String:
+	return "%s\n当前存活敌人：%d；每多一名敌人，摸牌数 +%d。" % [
+		description,
+		game.enemies_of(player).size(),
+		draw_bonus_per_extra_enemy,
+	]

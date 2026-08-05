@@ -40,3 +40,31 @@ func modify_draw_count(_game: Node, _player: Node, current_count: int) -> int:
 
 func status_text(_game: Node, _player: Node) -> String:
 	return display_name
+
+
+func ui_summary(game: Node, player: Node) -> String:
+	return "【%s】%s" % [display_name, status_text(game, player)]
+
+
+func ui_description(_game: Node, _player: Node) -> String:
+	return description
+
+
+func source_label() -> String:
+	match source_kind:
+		SourceKind.CHARACTER:
+			return "角色 Buff"
+		SourceKind.SCENE:
+			return "场景 Buff"
+	return "关卡 Buff"
+
+
+func ui_data(game: Node, player: Node) -> Dictionary:
+	return {
+		"id": id,
+		"display_name": display_name,
+		"summary": ui_summary(game, player),
+		"description": ui_description(game, player),
+		"source_label": source_label(),
+		"source_kind": int(source_kind),
+	}

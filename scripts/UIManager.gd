@@ -14,6 +14,8 @@ extends CanvasLayer
 @onready var player_name: Label = %PlayerName
 @onready var player_hp: ProgressBar = %PlayerHP
 @onready var player_hp_text: Label = %PlayerHPText
+@onready var buff_panel: PanelContainer = %BuffPanel
+@onready var buff_list: HBoxContainer = %BuffList
 @onready var player_status: Label = %PlayerStatus
 @onready var player_hand: HBoxContainer = %PlayerHand
 
@@ -122,6 +124,7 @@ func refresh() -> void:
 		"（男）" if human.gender == GeneralDefinition.Gender.MALE else "（女）",
 	]
 	_update_hp(player_hp, player_hp_text, human)
+	_rebuild_combat_modifier_badges(human)
 	player_status.text = _status_text(human)
 	player_status.tooltip_text = _skill_tooltip(human)
 	_rebuild_human_hand(human)
@@ -142,6 +145,51 @@ func _update_hp(bar: ProgressBar, label: Label, player: BattlePlayer) -> void:
 		player.hand.size(),
 		game.hand_limit_for(player),
 	]
+
+
+func _rebuild_combat_modifier_badges(player: BattlePlayer) -> void:
+	_clear_container(buff_list)
+	var modifiers: Array[Dictionary] = game.combat_modifier_ui_data_for(player)
+	buff_panel.visible = not modifiers.is_empty()
+	for data: Dictionary in modifiers:
+		var badge := PanelContainer.new()
+		badge.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		badge.add_theme_stylebox_override("panel", _buff_badge_style())
+		var summary: String = str(data.get("summary", data.get("display_name", "Buff")))
+		var tooltip: String = "%s · %s\n%s" % [
+			str(data.get("source_label", "Buff")),
+			str(data.get("display_name", "")),
+			str(data.get("description", "")),
+		]
+		badge.tooltip_text = tooltip
+		var label := Label.new()
+		label.text = summary
+		label.tooltip_text = tooltip
+		label.clip_text = true
+		label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		label.add_theme_color_override("font_color", Color(1.0, 0.88, 0.55))
+		label.add_theme_font_size_override("font_size", 14)
+		badge.add_child(label)
+		buff_list.add_child(badge)
+
+
+func _buff_badge_style() -> StyleBoxFlat:
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.24, 0.17, 0.06, 0.92)
+	style.border_width_left = 1
+	style.border_width_top = 1
+	style.border_width_right = 1
+	style.border_width_bottom = 1
+	style.border_color = Color(0.92, 0.68, 0.25, 0.95)
+	style.corner_radius_top_left = 6
+	style.corner_radius_top_right = 6
+	style.corner_radius_bottom_right = 6
+	style.corner_radius_bottom_left = 6
+	style.content_margin_left = 9.0
+	style.content_margin_right = 9.0
+	style.content_margin_top = 3.0
+	style.content_margin_bottom = 3.0
+	return style
 
 
 func _rebuild_human_hand(player: BattlePlayer) -> void:
@@ -196,7 +244,8 @@ func _ensure_enemy_zones() -> void:
 		var enemy: BattlePlayer = game.enemies[index]
 		var zone := PlayerDropZone.new()
 		zone.name = "EnemyZone%d" % (index + 1)
-		zone.custom_minimum_size = Vector2(0, 142)
+		## 多敌人战斗使用横向滚动；每个目标保持足够点击与信息展示宽度。
+		zone.custom_minimum_size = Vector2(380, 142)
 		zone.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		zone.player_index = game.players.find(enemy)
 		zone.add_theme_stylebox_override("panel", _enemy_zone_style())
@@ -568,10 +617,6 @@ func _update_actions(human: BattlePlayer) -> void:
 func _status_text(player: BattlePlayer) -> String:
 	var states: PackedStringArray = []
 	var skill_states: PackedStringArray = []
-	## Buff 放在裁剪文本最前方，确保玩家能直接看到当前【孤军】收益。
-	var combat_effects: PackedStringArray = game.combat_modifier_statuses_for(player)
-	if not combat_effects.is_empty():
-		states.append("增益:%s" % "/".join(combat_effects))
 	for skill: Skill in player.skills:
 		var state_text := "待触发"
 		if skill.has_tag(Skill.SkillTag.LOCKED):
