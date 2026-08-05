@@ -25,6 +25,7 @@ func _ready() -> void:
 	_test_liuli_two_player()
 	_test_qianxun()
 	_test_lianying()
+	_test_lianying_dying_rescue()
 	_test_jieyin()
 	_test_xiaoji()
 	_test_jijiu()
@@ -440,6 +441,79 @@ func _test_lianying() -> void:
 		"连营结束后装备替换继续结算且旧装备进入弃牌堆"
 	)
 
+func _test_lianying_dying_rescue() -> void:
+	## 0 体力时使用最后一张桃：先触发连营，再结算桃并脱离濒死。
+	_prepare(&"luxun", &"xiahoudun")
+	p2.is_ai = false
+	var escape_peach := PeachCard.new()
+	var escape_draw := SlashCard.new()
+	_set_hand(p1, [escape_peach])
+	_set_draw_top_first([escape_draw])
+	p1.hp = 0
+	p1.hp_changed.emit(p1.hp, p1.max_hp)
+	game._enter_dying(p1, Callable(game, "_return_to_play"))
+	game.request_rescue(Card.CardType.PEACH)
+	_expect(
+		game.flow_state == GameManager.FlowState.SKILL_CONFIRM
+		and game.pending_skill != null
+		and game.pending_skill.id == &"lianying"
+		and p1.hp == 0,
+		"陆逊在0体力使用最后一张桃后、桃回复前立即询问连营"
+	)
+	game.request_confirm_skill()
+	_expect(
+		p1.hp == 1
+		and escape_draw in p1.hand
+		and game.dying_player == null
+		and game.flow_state == GameManager.FlowState.PLAY_ACTIVE,
+		"连营结算后继续执行桃的回复并正常脱离濒死"
+	)
+
+	## -1 体力需要连续两张桃：第一张只回复到0，也须立即触发连营，摸到的桃可继续自救。
+	_prepare(&"luxun", &"xiahoudun")
+	p2.is_ai = false
+	var first_peach := PeachCard.new()
+	var chained_peach := PeachCard.new()
+	var chained_draw := DodgeCard.new()
+	_set_hand(p1, [first_peach])
+	_set_draw_top_first([chained_peach, chained_draw])
+	p1.hp = -1
+	p1.hp_changed.emit(p1.hp, p1.max_hp)
+	game._enter_dying(p1, Callable(game, "_return_to_play"))
+	game.request_rescue(Card.CardType.PEACH)
+	_expect(
+		game.flow_state == GameManager.FlowState.SKILL_CONFIRM
+		and game.pending_skill != null
+		and game.pending_skill.id == &"lianying"
+		and p1.hp == -1,
+		"陆逊在-1体力使用最后一张桃后仍立即询问连营"
+	)
+	game.request_confirm_skill()
+	_expect(
+		p1.hp == 0
+		and chained_peach in p1.hand
+		and game.dying_player == p1
+		and game.flow_state == GameManager.FlowState.DYING_RESCUE,
+		"第一张桃回复到0后保持濒死，连营摸到的桃可以继续自救"
+	)
+	game.request_rescue(Card.CardType.PEACH)
+	_expect(
+		game.flow_state == GameManager.FlowState.SKILL_CONFIRM
+		and game.pending_skill != null
+		and game.pending_skill.id == &"lianying"
+		and p1.hp == 0,
+		"连续使用第二张最后手牌桃时再次立即询问连营"
+	)
+	game.request_confirm_skill()
+	_expect(
+		p1.hp == 1
+		and chained_draw in p1.hand
+		and game.dying_player == null
+		and game.flow_state == GameManager.FlowState.PLAY_ACTIVE,
+		"连续用桃并穿插连营后正常脱离濒死"
+	)
+
+
 func _test_jieyin() -> void:
 	## 男性且受伤的对手合法，两张手牌原子支付，双方回复
 	_prepare(&"sunshangxiang", &"xiahoudun")
@@ -607,6 +681,13 @@ func _test_other_player_rescue() -> void:
 	game._enter_dying(p1, Callable())
 	_expect(game.rescue_actor == p1, "濒死者先获得自救机会")
 	game.request_rescue(Card.CardType.PEACH)
+	_expect(
+		game.flow_state == GameManager.FlowState.SKILL_CONFIRM
+		and game.pending_skill != null
+		and game.pending_skill.id == &"lianying",
+		"濒死者使用最后一张桃后先询问连营"
+	)
+	game.request_confirm_skill()
 	_expect(p1.hp == 0 and game.rescue_actor == p1, "自救一次后仍未回复至1继续询问")
 	game.request_give_up_rescue()
 	_expect(game.rescue_actor == p2, "自救放弃后询问另一方")

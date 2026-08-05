@@ -391,6 +391,12 @@ func _update_actions(human: BattlePlayer) -> void:
 	cancel_button.visible = game.flow_state == GameManager.FlowState.SELECTING_TARGET
 	serpent_spear_button.visible = is_human_play and game.can_use_serpent_spear(human)
 	serpent_spear_button.text = "丈八两牌当【杀】"
+	if game.is_selecting_iron_chain():
+		skill_cards_confirm_button.visible = true
+		skill_cards_confirm_button.text = "确认铁索目标（%d/2）" % game.iron_chain_selected_targets.size()
+		skill_cards_confirm_button.disabled = game.iron_chain_selected_targets.is_empty()
+		skill_cancel_button.visible = true
+		skill_cancel_button.text = "重铸【铁索连环】（摸一张）"
 
 	var responding_to_slash := (
 		game.flow_state in [
@@ -606,11 +612,19 @@ func _update_target_highlight() -> void:
 		var zone: PlayerDropZone = enemy_zones[index]
 		if enemy.is_dying():
 			zone.modulate = Color(0.45, 0.45, 0.45)
+		elif game.is_selecting_iron_chain() and enemy in game.iron_chain_selected_targets:
+			zone.modulate = Color("a8ffc2")
 		elif selecting and _is_enemy_zone_selectable(enemy):
 			zone.modulate = Color("fff0a8")
 		else:
 			zone.modulate = Color.WHITE
-	if (
+	if game.is_selecting_iron_chain():
+		player_zone.modulate = (
+			Color("a8ffc2")
+			if game.player1 in game.iron_chain_selected_targets
+			else Color("fff0a8")
+		)
+	elif (
 		selecting
 		and game._pending_borrow_slash_target
 		and game.can_slash_target(game._borrow_target, game.player1)
@@ -632,6 +646,8 @@ func _is_enemy_zone_selectable(player: BattlePlayer) -> bool:
 			return game.can_slash_target(game._borrow_target, player)
 		if not game._pending_serpent_spear.is_empty():
 			return game.can_slash_target(game.player1, player)
+		if game.is_selecting_iron_chain():
+			return not player.is_dying()
 		var hand_index: int = game.selected_hand_index
 		if hand_index < 0 or hand_index >= game.current_player().hand.size():
 			return false
@@ -750,7 +766,9 @@ func _on_skill_decline() -> void:
 
 
 func _on_skill_cards_confirm() -> void:
-	if game.flow_state == GameManager.FlowState.SKILL_ASSIGN_CARDS:
+	if game.is_selecting_iron_chain():
+		game.request_confirm_iron_chain_targets()
+	elif game.flow_state == GameManager.FlowState.SKILL_ASSIGN_CARDS:
 		game.request_confirm_card_assignment()
 	elif game.flow_state == GameManager.FlowState.DECK_REORDER:
 		game.request_confirm_deck_reorder(guanxing_top_indices)
@@ -759,7 +777,9 @@ func _on_skill_cards_confirm() -> void:
 
 
 func _on_skill_cancel() -> void:
-	if game.flow_state == GameManager.FlowState.SKILL_ASSIGN_CARDS:
+	if game.is_selecting_iron_chain():
+		game.request_recast_iron_chain()
+	elif game.flow_state == GameManager.FlowState.SKILL_ASSIGN_CARDS:
 		game.request_cancel_card_assignment()
 	elif game.flow_state == GameManager.FlowState.DECK_REORDER:
 		game.request_cancel_deck_reorder()

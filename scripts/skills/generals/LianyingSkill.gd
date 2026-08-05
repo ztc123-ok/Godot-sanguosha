@@ -16,7 +16,7 @@ func trigger_timing() -> StringName: return &"after_card_move"
 
 func can_trigger(context: RefCounted, _game: Node, owner: Node) -> bool:
 	var move := context as CardMoveContextScript
-	return move != null and move.owner == owner and move.lost_all_hand_cards() and owner.hp > 0
+	return move != null and move.owner == owner and move.lost_all_hand_cards()
 
 func should_ai_activate(_context: RefCounted, _game: Node, _owner: Node) -> bool: return true
 func build_resolution_request(_context: RefCounted, _game: Node, _owner: Node) -> Dictionary: return {"action": "lianying_draw"}

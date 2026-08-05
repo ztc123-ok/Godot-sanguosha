@@ -16,7 +16,7 @@ func trigger_timing() -> StringName: return &"after_card_move"
 
 func can_trigger(context: RefCounted, _game: Node, owner: Node) -> bool:
 	var move := context as CardMoveContextScript
-	return move != null and move.owner == owner and not move.lost_equipment_cards().is_empty() and owner.hp > 0
+	return move != null and move.owner == owner and not move.lost_equipment_cards().is_empty()
 
 ## 一次移动失去多张装备时，按实际失去的每张装备分别生成触发。
 func trigger_repeat_count(context: RefCounted, _game: Node, _owner: Node) -> int:

@@ -232,8 +232,8 @@ var _chain_card: Card
 var _chain_source: BattlePlayer
 var _chain_targets: Array[BattlePlayer] = []
 var _chain_index: int = 0
-## 铁索连环的选项缓存（code + label），避免用固定索引写死敌人数。
-var _iron_chain_options_cache: Array[Dictionary] = []
+## 玩家使用铁索连环时，通过点击角色区勾选的一至两名目标。
+var iron_chain_selected_targets: Array[BattlePlayer] = []
 
 ## 判定阶段上下文。
 var _judgement_queue: Array[Card] = []
@@ -395,11 +395,16 @@ func _tuxi_hand_target_for(owner: BattlePlayer) -> BattlePlayer:
 	return null
 
 
-## 除使用者外的全部存活角色（“所有其他角色”类牌的结算顺序按列表顺序）。
+## 除使用者外的全部存活角色：从使用者下家开始，按座次环绕结算。
+## 用于【南蛮入侵】【万箭齐发】等“所有其他角色”类牌。
 func _other_living_players(source: BattlePlayer) -> Array[BattlePlayer]:
 	var result: Array[BattlePlayer] = []
-	for player: BattlePlayer in living_players():
-		if player != source:
+	var source_index: int = player_index(source)
+	if source_index < 0:
+		return result
+	for offset: int in range(1, players.size()):
+		var player: BattlePlayer = players[(source_index + offset) % players.size()]
+		if not player.is_dying():
 			result.append(player)
 	return result
 
@@ -871,6 +876,7 @@ func _reset_transient_contexts() -> void:
 	_chain_source = null
 	_chain_targets.clear()
 	_chain_index = 0
+	iron_chain_selected_targets.clear()
 	_lijian_first_target = null
 	_pending_serpent_spear.clear()
 	_judgement_queue.clear()
@@ -979,6 +985,12 @@ func prompt_text() -> String:
 			return "【借刀杀人】：请选择指定出【杀】的目标角色"
 		if not _pending_serpent_spear.is_empty():
 			return "【丈八蛇矛】视为【杀】：点击或拖拽选择目标"
+		if is_selecting_iron_chain():
+			var selected_names: PackedStringArray = []
+			for target: BattlePlayer in iron_chain_selected_targets:
+				selected_names.append(target.player_name)
+			var suffix: String = "" if selected_names.is_empty() else "；已选：%s" % "、".join(selected_names)
+			return "【铁索连环】：点击角色切换选择（%d/2），确认使用或选择重铸%s" % [iron_chain_selected_targets.size(), suffix]
 		return "已选择【%s】——点击或拖到合法角色区域" % _selected_card_name()
 	if flow_state == FlowState.RESPONDING_SLASH:
 		return "%s 正被【杀】指定：使用【闪】或不响应" % pending_target.player_name
@@ -1355,6 +1367,9 @@ func request_card_on_target(hand_index: int, target_index: int) -> void:
 	if not _pending_serpent_spear.is_empty():
 		_resolve_serpent_spear_target(target_index)
 		return
+	if is_selecting_iron_chain():
+		request_target(target_index)
+		return
 	if flow_state == FlowState.GAME_OVER or current_player().is_ai:
 		return
 	if phase != Phase.PLAY or hand_index < 0 or hand_index >= player1.hand.size():
@@ -1371,6 +1386,9 @@ func request_card_on_target(hand_index: int, target_index: int) -> void:
 			_reject("【杀】必须指定对方。")
 			return
 		_play_slash(player1, target, hand_index)
+	elif card.card_type == Card.CardType.IRON_CHAIN:
+		_begin_iron_chain_choice(player1, hand_index)
+		_toggle_iron_chain_target(target)
 	elif card.category == Card.CardCategory.EQUIPMENT and target == player1:
 		_play_equipment(player1, hand_index)
 	elif card.is_trick():
@@ -1407,6 +1425,9 @@ func request_target(target_index: int) -> void:
 	if target.is_dying():
 		_reject("该角色已经阵亡。")
 		return
+	if card.card_type == Card.CardType.IRON_CHAIN:
+		_toggle_iron_chain_target(target)
+		return
 	if card.card_type == Card.CardType.SLASH:
 		if target == current_player():
 			_reject("【杀】必须指定对方。")
@@ -1434,9 +1455,53 @@ func request_cancel_selection() -> void:
 		selected_hand_index = -1
 		_return_to_play()
 		return
+	iron_chain_selected_targets.clear()
 	selected_hand_index = -1
 	flow_state = FlowState.PLAY_ACTIVE
 	_emit_state()
+
+
+func is_selecting_iron_chain() -> bool:
+	if flow_state != FlowState.SELECTING_TARGET:
+		return false
+	if selected_hand_index < 0 or selected_hand_index >= current_player().hand.size():
+		return false
+	return current_player().hand[selected_hand_index].card_type == Card.CardType.IRON_CHAIN
+
+
+func request_confirm_iron_chain_targets() -> void:
+	if not is_selecting_iron_chain() or iron_chain_selected_targets.is_empty():
+		return
+	var user: BattlePlayer = current_player()
+	var card: Card = user.hand[selected_hand_index]
+	var targets: Array[BattlePlayer] = []
+	for target: BattlePlayer in iron_chain_selected_targets:
+		if not target.is_dying() and target not in targets:
+			targets.append(target)
+	if targets.is_empty() or targets.size() > 2:
+		_reject("【铁索连环】须选择一至两名存活角色。")
+		return
+	selected_hand_index = -1
+	iron_chain_selected_targets.clear()
+	_move_cards(
+		user, user, [card], CardZone.PROCESSING, "使用【铁索连环】",
+		null, null, null,
+		Callable(self, "_proceed_iron_chain_use").bind(user, card, targets)
+	)
+
+
+func request_recast_iron_chain() -> void:
+	if not is_selecting_iron_chain():
+		return
+	var user: BattlePlayer = current_player()
+	var card: Card = user.hand[selected_hand_index]
+	selected_hand_index = -1
+	iron_chain_selected_targets.clear()
+	_move_cards(
+		user, user, [card], CardZone.PROCESSING, "重铸【铁索连环】",
+		null, null, null,
+		Callable(self, "_proceed_iron_chain_recast").bind(user, card)
+	)
 
 
 func request_begin_skill(skill_id: StringName) -> void:
@@ -2071,17 +2136,23 @@ func _apply_skill_resolution(
 		&"replace_draw_with_steal":
 			var draw := event_context as DrawContext
 			var target: BattlePlayer = _tuxi_hand_target_for(owner)
-			if draw != null and not target.hand.is_empty():
+			if draw != null and target != null and not target.hand.is_empty():
 				draw.draw_replaced = true
 				draw.final_count = 0
 				draw.replacement_skill = skill
 				var index: int = randi_range(0, target.hand.size() - 1)
-				var stolen: Card = target.remove_card_at(index)
-				owner.add_card(stolen)
+				var stolen: Card = target.hand[index]
 				_add_log("%s 发动【突袭】，放弃摸牌并随机获得 %s 的一张手牌。" % [
 					owner.player_name,
 					target.player_name,
 				])
+				## 【突袭】获得手牌同样是一次牌移动；必须在移动完成后先结算目标的
+				## 【连营】等“失去最后手牌”触发，再继续摸牌阶段。
+				asynchronous = true
+				_move_cards(
+					target, owner, [stolen], CardZone.HAND, "被【突袭】获得",
+					null, skill, owner, continuation
+				)
 		&"activate_luoyi":
 			var draw := event_context as DrawContext
 			if draw != null:
@@ -2849,7 +2920,7 @@ func _enqueue_triggers(
 	_trigger_queue.clear()
 	_trigger_queue_continue = continuation
 	for owner: BattlePlayer in owners:
-		if owner == null or owner.hp <= 0:
+		if not _trigger_owner_can_resolve(owner):
 			continue
 		for skill: Skill in owner.skills:
 			if skill.activation_mode != Skill.ActivationMode.TRIGGERED or skill.trigger_timing() != timing:
@@ -2872,7 +2943,7 @@ func _enqueue_triggers(
 func _process_next_trigger() -> void:
 	while not _trigger_queue.is_empty():
 		var entry: TriggerEntryScript = _trigger_queue.pop_front()
-		if entry.owner == null or entry.owner.hp <= 0:
+		if not _trigger_owner_can_resolve(entry.owner):
 			continue
 		if not entry.owner.can_pay_skill_usage(entry.skill) or not entry.skill.can_trigger(entry.event_context, self, entry.owner):
 			continue
@@ -2886,6 +2957,12 @@ func _process_next_trigger() -> void:
 	else:
 		_trigger_queue_continue = Callable()
 	_call_safe(continuation)
+
+
+## 濒死角色尚未死亡，仍可结算在救援过程中由牌移动产生的即时触发（如连营）。
+## 一旦濒死结算宣告死亡，dying_player 会被清空，0 体力角色仍会被正常过滤。
+func _trigger_owner_can_resolve(owner: BattlePlayer) -> bool:
+	return owner != null and (owner.hp > 0 or owner == dying_player)
 
 
 func request_dodge() -> void:
@@ -4703,88 +4780,42 @@ func _take_amazing_grace_card(card_index: int) -> void:
 	_finish_nullifiable_effect()
 
 
-func _iron_chain_options(user: BattlePlayer) -> Array[Dictionary]:
-	var options: Array[Dictionary] = [{"code": "self", "label": "切换自己连环"}]
-	if user.is_ai:
-		## 全 AI 模式下 player1 也可能是 AI，统一按“谁在使用”决定对手。
-		var rival: BattlePlayer = _default_attack_target(user)
-		if rival != null:
-			options.append({"code": "enemy", "label": "切换玩家连环", "target": rival})
-	else:
-		for enemy: BattlePlayer in living_enemies():
-			options.append({"code": "enemy", "label": "切换%s连环" % enemy.player_name, "target": enemy})
-	## 1v1 兼容：保持原有“自己/对手/双方/重铸”选项顺序，避免依赖旧索引的测试与旧习惯被破坏。
-	if not user.is_ai and living_enemies().size() == 1:
-		var rival: BattlePlayer = first_living_enemy()
-		if rival != null:
-			return [
-				{"code": "self", "label": "切换自己连环"},
-				{"code": "enemy", "label": "切换对手连环", "target": rival},
-				{"code": "both", "label": "切换双方连环", "target": rival},
-				{"code": "recast", "label": "重铸（摸一张）"},
-			]
-	if not _other_living_players(user).is_empty():
-		options.append({"code": "all", "label": "切换所有其他角色连环"})
-	options.append({"code": "recast", "label": "重铸（摸一张）"})
-	return options
-
-
 func _begin_iron_chain_choice(user: BattlePlayer, hand_index: int) -> void:
 	selected_hand_index = hand_index
-	_iron_chain_options_cache = _iron_chain_options(user)
-	choice_labels.clear()
-	for option: Dictionary in _iron_chain_options_cache:
-		choice_labels.append(option["label"])
-	choice_owner = user
-	_choice_handler = Callable(self, "_resolve_iron_chain_choice")
-	flow_state = FlowState.CHOOSING_OPTION
+	iron_chain_selected_targets.clear()
+	flow_state = FlowState.SELECTING_TARGET
+	_add_log("%s 选择【铁索连环】，可点击一至两名角色，或重铸此牌。" % user.player_name)
 	_emit_state()
 
 
-func _resolve_iron_chain_choice(option_index: int) -> void:
-	var user: BattlePlayer = current_player()
-	if selected_hand_index < 0 or selected_hand_index >= user.hand.size():
-		_return_to_play()
+func _toggle_iron_chain_target(target: BattlePlayer) -> void:
+	if not is_selecting_iron_chain() or target == null or target.is_dying():
 		return
-	var card: Card = user.hand[selected_hand_index]
-	selected_hand_index = -1
-	_move_cards(
-		user, user, [card], CardZone.PROCESSING, "使用【铁索连环】",
-		null, null, null,
-		Callable(self, "_proceed_iron_chain_use").bind(user, card, option_index)
-	)
+	if target in iron_chain_selected_targets:
+		iron_chain_selected_targets.erase(target)
+		_add_log("取消选择 %s 作为【铁索连环】目标。" % target.player_name)
+	elif iron_chain_selected_targets.size() >= 2:
+		_reject("【铁索连环】至多选择两名角色；可先点击已选角色取消。")
+		return
+	else:
+		iron_chain_selected_targets.append(target)
+		_add_log("选择 %s 作为【铁索连环】目标（%d/2）。" % [target.player_name, iron_chain_selected_targets.size()])
+	_emit_state()
 
 
-func _proceed_iron_chain_use(user: BattlePlayer, card: Card, option_index: int) -> void:
+func _proceed_iron_chain_use(user: BattlePlayer, card: Card, targets: Array[BattlePlayer]) -> void:
 	_active_use_context = SkillUseContext.new(
-		user, [card], Card.CardType.IRON_CHAIN, null, null, false, "【铁索连环】"
+		user, [card], Card.CardType.IRON_CHAIN, null, targets[0], false, "【铁索连环】"
 	)
-	if option_index < 0 or option_index >= _iron_chain_options_cache.size():
-		_return_to_play()
-		return
-	var option: Dictionary = _iron_chain_options_cache[option_index]
-	if option.get("code", "") == "recast":
-		draw_cards(user, 1)
-		_add_log("%s 重铸【铁索连环】，摸一张牌。" % user.player_name)
-		_return_to_play()
-		return
-	var targets: Array[BattlePlayer] = []
-	match option.get("code", ""):
-		"self":
-			targets = [user]
-		"human", "enemy":
-			var chosen: BattlePlayer = option.get("target", null)
-			if chosen != null and not chosen.is_dying():
-				targets = [chosen]
-		"both":
-			targets = [user]
-			var rival: BattlePlayer = option.get("target", null)
-			if rival != null and not rival.is_dying():
-				targets.append(rival)
-		"all":
-			targets = _other_living_players(user)
 	var continuation: Callable = Callable(self, "_start_iron_chain").bind(card, user, targets)
 	_enqueue_triggers(&"after_trick_use", _active_use_context, [user], continuation)
+
+
+func _proceed_iron_chain_recast(user: BattlePlayer, card: Card) -> void:
+	draw_cards(user, 1)
+	_settle_processing_card(card)
+	_add_log("%s 重铸【铁索连环】，摸一张牌。" % user.player_name)
+	_return_to_play()
 
 
 func _start_iron_chain(card: Card, source: BattlePlayer, targets: Array[BattlePlayer]) -> void:
@@ -5149,15 +5180,39 @@ func _cancel_delayed_judgement() -> void:
 
 
 func _pass_lightning(card: Card) -> void:
-	var next: BattlePlayer = _next_living_player_after(current_player())
-	if next == null:
-		next = current_player()
-	if not next.has_delayed_trick(Card.CardType.LIGHTNING):
-		next.add_delayed_trick(card)
-		_add_log("【闪电】未命中，传递到 %s 的判定区。" % next.player_name)
-	else:
+	var origin: BattlePlayer = current_player()
+	var target: BattlePlayer = _next_lightning_target_after(origin)
+	if target == null:
 		discard_pile.append(card)
-		_add_log("下一名角色已有【闪电】，此【闪电】进入弃牌堆。")
+		_add_log("没有可接收【闪电】的存活角色，此【闪电】进入弃牌堆。")
+		return
+	if target.add_delayed_trick(card):
+		_add_log("【闪电】未命中，传递到 %s 的判定区。" % target.player_name)
+	else:
+		## 防御性兜底：正常搜索已排除同名牌，不应进入此分支。
+		discard_pile.append(card)
+		_add_log("【闪电】传递目标状态异常，此【闪电】进入弃牌堆。")
+
+
+## 从原目标的下家开始寻找第一名【闪电】合法目标；已有同名牌或受到技能保护者跳过。
+## 若绕场一周仍无合法目标，官方规则要求回到原目标的判定区。
+func _next_lightning_target_after(origin: BattlePlayer) -> BattlePlayer:
+	if origin == null or players.is_empty():
+		return null
+	var start: int = player_index(origin)
+	if start < 0:
+		return null
+	for offset: int in range(1, players.size() + 1):
+		var candidate: BattlePlayer = players[(start + offset) % players.size()]
+		if candidate.is_dying():
+			continue
+		if candidate.has_delayed_trick(Card.CardType.LIGHTNING):
+			continue
+		if not _skills_allow_target(null, candidate, Card.CardType.LIGHTNING):
+			continue
+		return candidate
+	## 极端情况下所有角色均受技能影响而不是合法目标，仍按规则放回原目标处。
+	return origin if not origin.is_dying() else null
 
 
 func _finish_judgement_phase() -> void:
@@ -5378,6 +5433,10 @@ func _use_jijiu_card(actor: BattlePlayer, card: Card) -> void:
 
 
 func _apply_rescue_recovery(actor: BattlePlayer, label: String) -> void:
+	## 救援牌失去最后手牌时可能先插入【连营】；触发队列结束后恢复救援状态，
+	## 再执行这张【桃】/【酒】本身的回复效果。
+	if flow_state == FlowState.SKILL_RESOLVING and dying_player != null:
+		flow_state = FlowState.DYING_RESCUE
 	if flow_state != FlowState.DYING_RESCUE or dying_player == null or dying_player.hp > 0:
 		return
 	dying_player.recover(1)
@@ -5977,7 +6036,7 @@ func _perform_ai_play() -> void:
 		_move_cards(
 			ai, ai, [chain_card], CardZone.PROCESSING, "使用【铁索连环】",
 			null, null, null,
-			Callable(self, "_proceed_ai_iron_chain").bind(ai, enemy, chain_card)
+			Callable(self, "_proceed_ai_iron_chain").bind(ai, chain_card)
 		)
 		return
 
@@ -6004,21 +6063,34 @@ func _perform_ai_play() -> void:
 	_finish_play_phase()
 
 
-func _proceed_ai_iron_chain(ai: BattlePlayer, enemy: BattlePlayer, chain_card: Card) -> void:
-	_active_use_context = SkillUseContext.new(
-		ai, [chain_card], Card.CardType.IRON_CHAIN, null, enemy, false, "【铁索连环】"
-	)
-	if not enemy.chained:
-		var chain_targets: Array[BattlePlayer] = [enemy]
+func _ai_iron_chain_targets(ai: BattlePlayer) -> Array[BattlePlayer]:
+	var targets: Array[BattlePlayer] = []
+	## 先解除自己及队友的连环，避免后续属性伤害扩散到己方。
+	for player: BattlePlayer in living_players():
+		if player.role_name == ai.role_name and player.chained:
+			targets.append(player)
+			if targets.size() == 2:
+				return targets
+	## 再横置至多两名尚未连环的敌人，为属性伤害创造收益。
+	for player: BattlePlayer in enemies_of(ai):
+		if not player.chained:
+			targets.append(player)
+			if targets.size() == 2:
+				break
+	return targets
+
+
+func _proceed_ai_iron_chain(ai: BattlePlayer, chain_card: Card) -> void:
+	var chain_targets: Array[BattlePlayer] = _ai_iron_chain_targets(ai)
+	if not chain_targets.is_empty():
+		_active_use_context = SkillUseContext.new(
+			ai, [chain_card], Card.CardType.IRON_CHAIN, null, chain_targets[0], false, "【铁索连环】"
+		)
 		var continuation: Callable = Callable(self, "_start_iron_chain").bind(chain_card, ai, chain_targets)
 		_enqueue_triggers(&"after_trick_use", _active_use_context, [ai], continuation)
 		return
-	draw_cards(ai, 1)
-	_settle_processing_card(chain_card)
-	_active_use_context = null
-	_add_log("%s 重铸【铁索连环】，摸一张牌。" % ai.player_name)
-	## 重铸后必须恢复出牌状态；若此前连营/集智触发过，flow 仍在 SKILL_RESOLVING。
-	_return_to_play()
+	## 没有“解开己方/横置敌方”的正收益目标时重铸，不盲目翻转已有状态。
+	_proceed_iron_chain_recast(ai, chain_card)
 
 
 

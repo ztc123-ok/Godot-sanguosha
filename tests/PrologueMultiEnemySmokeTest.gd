@@ -24,6 +24,7 @@ func _ready() -> void:
 	_test_battle1_single_enemy()
 	await _test_battle2_two_enemies()
 	await _test_turn_order_and_dead_skip()
+	await _test_lightning_skips_duplicate_judgement_zone()
 	await _test_player_can_target_both_enemies()
 	await _test_first_enemy_death_continues()
 	await _test_all_enemies_dead_wins()
@@ -31,7 +32,9 @@ func _ready() -> void:
 	await _test_victory_unlocks_village()
 	await _test_battle1_flow_unchanged()
 	await _test_targeted_tricks_both_enemies()
+	await _test_iron_chain_multiplayer_selection_and_ai()
 	await _test_aoe_both_enemies_and_death_flow()
+	await _test_aoe_starts_from_card_users_next_seat()
 	await _test_multiplayer_rescue_order()
 	await _test_serpent_spear_target_choice()
 	await _test_ai_serpent_spear_target_driver()
@@ -159,6 +162,41 @@ func _test_turn_order_and_dead_skip() -> void:
 	await get_tree().process_frame
 
 
+func _test_lightning_skips_duplicate_judgement_zone() -> void:
+	var game := _make_game(2)
+	await get_tree().process_frame
+	_start_battle2(game)
+	game.current_player_index = 0
+
+	## 玩家闪电判定失败时，AI1 已有闪电：应跳过 AI1 传给 AI2，而不是弃置。
+	var blocker := LightningCard.new()
+	var passing := LightningCard.new()
+	game.enemies[0].add_delayed_trick(blocker)
+	game._pass_lightning(passing)
+	_expect(
+		game.enemies[0].lightning_card == blocker
+		and game.enemies[1].lightning_card == passing
+		and passing not in game.discard_pile,
+		"闪电传递跳过已有同名牌的下家并进入再下一家判定区"
+	)
+
+	## 下家与下下家均已有闪电时，继续绕场搜索并回到已腾空判定区的原角色。
+	game.enemies[1].remove_delayed_trick(Card.CardType.LIGHTNING)
+	var second_blocker := LightningCard.new()
+	var wrapping := LightningCard.new()
+	game.enemies[1].add_delayed_trick(second_blocker)
+	game._pass_lightning(wrapping)
+	_expect(
+		game.player1.lightning_card == wrapping
+		and game.enemies[0].lightning_card == blocker
+		and game.enemies[1].lightning_card == second_blocker
+		and wrapping not in game.discard_pile,
+		"闪电连续跳过多个同名判定区并按座次绕回原角色"
+	)
+	game.queue_free()
+	await get_tree().process_frame
+
+
 func _test_player_can_target_both_enemies() -> void:
 	var game := _make_game(2)
 	await get_tree().process_frame
@@ -182,6 +220,90 @@ func _test_player_can_target_both_enemies() -> void:
 	_expect(game.enemies[1].hp == game.enemies[1].max_hp - 1, "杀可指定 AI2 并只伤害 AI2")
 	_expect(game.enemies[0].hp == game.enemies[0].max_hp - 1, "杀 AI2 不伤害 AI1")
 	game.queue_free()
+	await get_tree().process_frame
+
+
+func _test_iron_chain_multiplayer_selection_and_ai() -> void:
+	var game := _make_game(2)
+	await get_tree().process_frame
+	_start_battle2(game)
+	_set_hand(game.player1, [IronChainCard.new()])
+	game.request_card_use(0)
+	game.request_target(1)
+	game.request_target(2)
+	game.request_target(0)
+	_expect(
+		game.iron_chain_selected_targets.size() == 2
+		and game.player1 not in game.iron_chain_selected_targets,
+		"多人【铁索连环】点击选择严格限制为至多两名角色"
+	)
+	game.request_confirm_iron_chain_targets()
+	_pass_nullification_chain(game)
+	_pass_nullification_chain(game)
+	_expect(
+		game.enemies[0].chained and game.enemies[1].chained and not game.player1.chained,
+		"多人【铁索连环】只切换已确认的两名目标"
+	)
+	game.queue_free()
+	await get_tree().process_frame
+
+	## 主公 AI 面对两名未横置反贼时，应一次选择两名敌人。
+	var game2 := _make_game(2)
+	await get_tree().process_frame
+	_start_battle2(game2)
+	game2.player1.is_ai = true
+	game2.current_player_index = 0
+	game2.phase = GameManager.Phase.PLAY
+	game2.flow_state = GameManager.FlowState.PLAY_ACTIVE
+	_set_hand(game2.player1, [IronChainCard.new()])
+	_set_hand(game2.enemies[0], [])
+	_set_hand(game2.enemies[1], [])
+	game2._perform_ai_play()
+	_pass_nullification_chain(game2)
+	_pass_nullification_chain(game2)
+	_expect(
+		game2.enemies[0].chained and game2.enemies[1].chained,
+		"AI【铁索连环】会在多人场景选择两名未横置敌人"
+	)
+	game2.queue_free()
+	await get_tree().process_frame
+
+	## 反贼 AI 同时解除己方连环并横置敌方；没有正收益目标时改为重铸。
+	var game3 := _make_game(2)
+	await get_tree().process_frame
+	_start_battle2(game3)
+	game3.current_player_index = 1
+	game3.phase = GameManager.Phase.PLAY
+	game3.flow_state = GameManager.FlowState.PLAY_ACTIVE
+	game3.enemies[1].chained = true
+	_set_hand(game3.enemies[0], [IronChainCard.new()])
+	_set_hand(game3.player1, [])
+	_set_hand(game3.enemies[1], [])
+	game3._perform_ai_play()
+	_pass_nullification_chain(game3)
+	_pass_nullification_chain(game3)
+	_expect(
+		not game3.enemies[1].chained and game3.player1.chained,
+		"AI【铁索连环】可同时重置横置队友并横置敌人"
+	)
+	game3.queue_free()
+	await get_tree().process_frame
+
+	var game4 := _make_game(2)
+	await get_tree().process_frame
+	_start_battle2(game4)
+	game4.current_player_index = 1
+	game4.phase = GameManager.Phase.PLAY
+	game4.flow_state = GameManager.FlowState.PLAY_ACTIVE
+	game4.player1.chained = true
+	var before_draw: int = game4.draw_pile.size()
+	_set_hand(game4.enemies[0], [IronChainCard.new()])
+	game4._perform_ai_play()
+	_expect(
+		game4.enemies[0].hand.size() == 1 and game4.draw_pile.size() == before_draw - 1,
+		"AI【铁索连环】无正收益目标时选择重铸"
+	)
+	game4.queue_free()
 	await get_tree().process_frame
 
 
@@ -362,6 +484,44 @@ func _test_aoe_both_enemies_and_death_flow() -> void:
 	_expect(game.flow_state == GameManager.FlowState.PLAY_ACTIVE, "群体牌结算完成后回到出牌阶段")
 	game.queue_free()
 	await get_tree().process_frame
+
+
+## 南蛮与万箭均须从出牌者下家开始，沿座次逐人响应，而非从 players[0] 开始。
+func _test_aoe_starts_from_card_users_next_seat() -> void:
+	for aoe_card: Card in [BarbarianInvasionCard.new(), ArrowBarrageCard.new()]:
+		var game := _make_game(2)
+		await get_tree().process_frame
+		_start_battle2(game)
+		var source: BattlePlayer = game.enemies[0]
+		var next_seat: BattlePlayer = game.enemies[1]
+		game.player1.is_ai = true
+		game.current_player_index = 1
+		game.phase = GameManager.Phase.PLAY
+		game.flow_state = GameManager.FlowState.PLAY_ACTIVE
+		_set_hand(source, [aoe_card])
+		_set_hand(next_seat, [])
+		_set_hand(game.player1, [])
+		game._use_self_or_global_trick(source, 0)
+		_expect(
+			game._global_targets.size() == 2
+			and game._global_targets[0] == next_seat
+			and game._global_targets[1] == game.player1,
+			"【%s】从出牌者下家开始按座次生成响应顺序" % aoe_card.display_name
+		)
+		_pass_nullification_chain(game)
+		game._perform_ai_response()
+		_expect(
+			next_seat.hp == next_seat.max_hp - 1 and game.player1.hp == game.player1.max_hp,
+			"【%s】先结算出牌者下家" % aoe_card.display_name
+		)
+		_pass_nullification_chain(game)
+		game._perform_ai_response()
+		_expect(
+			game.player1.hp == game.player1.max_hp - 1,
+			"【%s】再沿座次结算后续角色" % aoe_card.display_name
+		)
+		game.queue_free()
+		await get_tree().process_frame
 
 
 ## 1v2 濒死救援须按座次询问完整一圈，不能在第一名角色放弃后直接宣告死亡。

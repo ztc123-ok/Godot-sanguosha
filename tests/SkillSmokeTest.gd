@@ -172,6 +172,31 @@ func _test_tuxi_draw_replacement() -> void:
 	game.request_confirm_skill()
 	_expect(p1.hand.size() == 1 and p2.hand.is_empty(), "【突袭】放弃正常摸牌并只获得对手一张暗牌")
 
+	## 【突袭】获得陆逊最后一张手牌后，须先结算【连营】，再进入出牌阶段。
+	_prepare_play(&"zhangliao", &"luxun")
+	p2.is_ai = false
+	var stolen := PeachCard.new()
+	var lianying_draw := DodgeCard.new()
+	_set_hand(p1, [])
+	_set_hand(p2, [stolen])
+	_set_draw_pile([lianying_draw])
+	game._finish_judgement_phase()
+	game.request_confirm_skill()
+	_expect(
+		stolen in p1.hand
+		and p2.hand.is_empty()
+		and game.flow_state == GameManager.FlowState.SKILL_CONFIRM
+		and game.pending_skill != null
+		and game.pending_skill.id == &"lianying",
+		"张辽突袭获得陆逊最后手牌后立即询问连营"
+	)
+	game.request_confirm_skill()
+	_expect(
+		lianying_draw in p2.hand
+		and game.flow_state == GameManager.FlowState.PLAY_ACTIVE,
+		"陆逊连营摸牌后突袭结算继续进入张辽出牌阶段"
+	)
+
 	_prepare_play(&"zhangliao", &"zhangfei")
 	_set_hand(p1, [])
 	_set_hand(p2, [])
