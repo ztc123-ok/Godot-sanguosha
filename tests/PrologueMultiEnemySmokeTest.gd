@@ -326,6 +326,8 @@ func _test_first_enemy_death_continues() -> void:
 	_expect(game.flow_state != GameManager.FlowState.GAME_OVER, "击败第一个 AI 后战斗不结束")
 	_expect(game.living_enemies().size() == 1, "击败第一个 AI 后仅剩一名存活敌人")
 	_expect(not _battle_won_flag, "击败第一个 AI 时不发出胜利信号")
+	_expect(game.flow_state == GameManager.FlowState.KILL_REWARD, "首名敌人阵亡后进入击杀奖励二选一")
+	game.request_option(1)
 	_expect(game.flow_state == GameManager.FlowState.PLAY_ACTIVE, "击败第一个 AI 后回到出牌阶段")
 	## 已死亡敌人不能再被选中（规则层拒绝）。
 	_set_hand(game.player1, [SlashCard.new()])
@@ -352,6 +354,7 @@ func _test_all_enemies_dead_wins() -> void:
 	game.request_card_on_target(0, 1)
 	game._perform_ai_response()
 	_expect(game.flow_state != GameManager.FlowState.GAME_OVER, "第一个 AI 阵亡后战斗未结束")
+	game.request_option(1)
 	## 再击杀 AI2，才判定胜利。
 	_set_hand(game.player1, [SlashCard.new()])
 	game.enemies[1].hp = 1
@@ -411,6 +414,7 @@ func _test_victory_unlocks_village() -> void:
 	game.request_card_on_target(0, 1)
 	game._perform_ai_response()
 	_expect(game.flow_state != GameManager.FlowState.GAME_OVER, "首个敌人阵亡后战斗继续")
+	game.request_option(1)
 	game.player1.slash_used_this_turn = false
 	game.request_card_on_target(0, 2)
 	game._perform_ai_response()
@@ -478,6 +482,8 @@ func _test_aoe_both_enemies_and_death_flow() -> void:
 	game._perform_ai_response()
 	_expect(game.enemies[0].is_dying(), "南蛮先结算 AI1 并使其阵亡")
 	_expect(game.flow_state != GameManager.FlowState.GAME_OVER, "南蛮中 AI1 阵亡后战斗不结束")
+	_expect(game.flow_state == GameManager.FlowState.KILL_REWARD, "南蛮首杀后奖励暂停并保存后续目标 continuation")
+	game.request_option(1)
 	_pass_nullification_chain(game)
 	game._perform_ai_response()
 	_expect(game.enemies[1].hp == game.enemies[1].max_hp - 1, "南蛮继续结算 AI2")

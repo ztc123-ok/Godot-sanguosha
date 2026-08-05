@@ -461,7 +461,7 @@ func _update_actions(human: BattlePlayer) -> void:
 	if game.flow_state == GameManager.FlowState.FIRE_DISCARD and game._fire_source == human:
 		fire_pass_button.visible = true
 
-	if game.flow_state == GameManager.FlowState.CHOOSING_OPTION and game.choice_owner == human:
+	if game.flow_state in [GameManager.FlowState.CHOOSING_OPTION, GameManager.FlowState.KILL_REWARD] and game.choice_owner == human:
 		for index: int in mini(game.choice_labels.size(), choice_buttons.size()):
 			choice_buttons[index].visible = true
 			choice_buttons[index].text = game.choice_labels[index]
@@ -548,6 +548,7 @@ func _update_actions(human: BattlePlayer) -> void:
 			GameManager.FlowState.DECK_REORDER,
 			GameManager.FlowState.SKILL_ASSIGN_CARDS,
 			GameManager.FlowState.CHOOSING_SUIT,
+			GameManager.FlowState.KILL_REWARD,
 		]
 		or game.flow_state == GameManager.FlowState.DYING_RESCUE
 	)
@@ -567,6 +568,10 @@ func _update_actions(human: BattlePlayer) -> void:
 func _status_text(player: BattlePlayer) -> String:
 	var states: PackedStringArray = []
 	var skill_states: PackedStringArray = []
+	## Buff 放在裁剪文本最前方，确保玩家能直接看到当前【孤军】收益。
+	var combat_effects: PackedStringArray = game.combat_modifier_statuses_for(player)
+	if not combat_effects.is_empty():
+		states.append("增益:%s" % "/".join(combat_effects))
 	for skill: Skill in player.skills:
 		var state_text := "待触发"
 		if skill.has_tag(Skill.SkillTag.LOCKED):

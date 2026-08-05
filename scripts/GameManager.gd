@@ -3,13 +3,24 @@ extends Node
 ## 双人局唯一规则入口。
 ## 所有主动牌、响应牌、锦囊、判定、伤害和濒死均经过本状态机结算。
 
-## 各序章关卡的敌人数量配置；关卡差异集中在此，避免散落到卡牌规则中。
+## 各序章关卡的规则配置；关卡差异集中在此，避免散落到卡牌、技能与 UI 中。
 const BATTLE_CONFIGS := {
 	1: {
 		"enemy_count": 1,
+		"combat_modifiers": [],
+		"kill_reward": &"",
 	},
 	2: {
 		"enemy_count": 2,
+		"combat_modifiers": [
+			{
+				"id": &"lone_army",
+				"target": &"PLAYER",
+				"source": &"BATTLE",
+				"draw_bonus_per_extra_enemy": 1,
+			},
+		],
+		"kill_reward": &"heal_one_or_draw_two",
 	},
 }
 
@@ -19,6 +30,9 @@ const TriggerEntryScript = preload("res://scripts/skills/TriggerEntry.gd")
 const CardMoveContextScript = preload("res://scripts/skills/CardMoveContext.gd")
 const SlashTargetContextScript = preload("res://scripts/skills/SlashTargetContext.gd")
 const SilverLionLeaveScript = preload("res://scripts/skills/generals/SilverLionLeaveSkill.gd")
+const BattleModifierFactoryScript = preload("res://scripts/battle/BattleModifierFactory.gd")
+
+const KILL_REWARD_HEAL_OR_DRAW: StringName = &"heal_one_or_draw_two"
 
 signal state_changed
 signal log_added(message: String)
@@ -44,6 +58,7 @@ enum FlowState {
 	MULTI_RESPONSE,
 	NULLIFICATION_RESPONSE,
 	CHOOSING_OPTION,
+	KILL_REWARD,
 	CHOOSING_REVEALED,
 	AOE_RESPONSE,
 	DUEL_RESPONSE,
@@ -183,6 +198,8 @@ var _pending_weapon_skill: Card.CardType = Card.CardType.SLASH
 ## 通用伤害队列；普通、属性与连环传播都使用 DamageContext。
 var _damage_queue: Array[DamageContext] = []
 var _damage_after: Callable = Callable()
+## 支持【刚烈】等嵌套伤害：只有最外层伤害链结束后才判断胜负并发放奖励。
+var _damage_resolution_depth: int = 0
 var _dying_after: Callable = Callable()
 var _rescue_passed: Array[BattlePlayer] = []
 var _damage_trigger_continue: Callable = Callable()
@@ -202,7 +219,14 @@ var _nullification_responder_index: int = 0
 
 ## 通用选项上下文。
 var _choice_handler: Callable = Callable()
+var _choice_ai_option_index: int = 0
 var _zone_choice_codes: Array[String] = []
+
+## 统一战斗修正集合。后续角色 Buff、场景 Buff 可通过 add_combat_modifier 接入。
+var combat_modifiers: Array[RefCounted] = []
+## 敌人死亡先记录为待结算奖励，整段伤害/濒死链结束后再逐项兑现。
+var _pending_kill_rewards: Array[Dictionary] = []
+var _declared_dead_ids: Dictionary = {}
 
 ## 群体锦囊上下文。
 var _global_card: Card
@@ -295,8 +319,53 @@ func _ensure_enemy_players() -> void:
 
 
 func enemy_count_for_current_battle() -> int:
-	var config: Dictionary = BATTLE_CONFIGS.get(PrologueState.active_battle, {})
-	return int(config.get("enemy_count", 1))
+	return int(current_battle_config().get("enemy_count", 1))
+
+
+func current_battle_config() -> Dictionary:
+	return BATTLE_CONFIGS.get(PrologueState.active_battle, {})
+
+
+## 安装由关卡配置提供的修正。角色/场景系统以后也可直接调用 add_combat_modifier，
+## 不需要把来源判断写进摸牌或其他规则入口。
+func _install_battle_modifiers() -> void:
+	combat_modifiers.clear()
+	for spec: Dictionary in current_battle_config().get("combat_modifiers", []):
+		var owner: BattlePlayer = null
+		match StringName(spec.get("target", &"PLAYER")):
+			&"PLAYER":
+				owner = player1
+		var modifier: RefCounted = BattleModifierFactoryScript.create_modifier(spec, owner)
+		if modifier != null:
+			add_combat_modifier(modifier)
+
+
+func add_combat_modifier(modifier: RefCounted) -> void:
+	if modifier != null and modifier not in combat_modifiers:
+		combat_modifiers.append(modifier)
+
+
+func draw_count_for(player: BattlePlayer, base_count: int = 2) -> int:
+	var result: int = maxi(base_count, 0)
+	for modifier: RefCounted in combat_modifiers:
+		if modifier.has_method("applies_to") and modifier.applies_to(player):
+			result = int(modifier.modify_draw_count(self, player, result))
+	return maxi(result, 0)
+
+
+func combat_modifier_statuses_for(player: BattlePlayer) -> PackedStringArray:
+	var result: PackedStringArray = []
+	for modifier: RefCounted in combat_modifiers:
+		if modifier.has_method("applies_to") and modifier.applies_to(player):
+			result.append(str(modifier.status_text(self, player)))
+	return result
+
+
+## 奖励资格只由当前战斗配置和存活阵营决定；最后一名敌人不产生奖励。
+func kill_reward_for(defeated: BattlePlayer) -> StringName:
+	if defeated == null or defeated not in enemies or living_enemies().is_empty():
+		return &""
+	return StringName(current_battle_config().get("kill_reward", &""))
 
 
 ## 存活角色集合（含玩家与全部 AI）。
@@ -633,7 +702,7 @@ func _ai_driver_for_state(state: FlowState) -> StringName:
 			return &"_perform_ai_response"
 		FlowState.SKILL_CONFIRM:
 			return &"_perform_ai_skill_confirm"
-		FlowState.CHOOSING_OPTION:
+		FlowState.CHOOSING_OPTION, FlowState.KILL_REWARD:
 			return &"_perform_ai_choice"
 		FlowState.CHOOSING_SUIT:
 			return &"_perform_ai_choose_fanjian_suit"
@@ -808,6 +877,7 @@ func start_match(begin_first_turn: bool = true) -> void:
 	pending_target = null
 	dying_player = null
 	flow_state = FlowState.IDLE
+	_install_battle_modifiers()
 
 	for player: BattlePlayer in players:
 		player.reset_for_match()
@@ -842,7 +912,11 @@ func _reset_transient_contexts() -> void:
 	choice_labels.clear()
 	choice_owner = null
 	_choice_handler = Callable()
+	_choice_ai_option_index = 0
 	_zone_choice_codes.clear()
+	combat_modifiers.clear()
+	_pending_kill_rewards.clear()
+	_declared_dead_ids.clear()
 	_attack_after = Callable()
 	_attack_nature = DamageNature.NORMAL
 	_attack_use_context = null
@@ -908,6 +982,7 @@ func _reset_transient_contexts() -> void:
 	_ganglie_discard_source = null
 	_damage_queue.clear()
 	_damage_after = Callable()
+	_damage_resolution_depth = 0
 	_dying_after = Callable()
 	_rescue_passed.clear()
 	_last_damage_context = null
@@ -1008,6 +1083,8 @@ func prompt_text() -> String:
 		]
 	if flow_state == FlowState.CHOOSING_OPTION:
 		return "%s：请选择一项" % choice_owner.player_name
+	if flow_state == FlowState.KILL_REWARD:
+		return "击杀奖励：请选择一项（只能获得其中一项）"
 	if flow_state == FlowState.CHOOSING_REVEALED:
 		return "%s 从【五谷丰登】亮出的牌中选择一张" % _revealed_selecting_player.player_name
 	if flow_state == FlowState.AOE_RESPONSE:
@@ -3101,7 +3178,7 @@ func request_pass_nullification() -> void:
 
 
 func request_option(option_index: int) -> void:
-	if flow_state != FlowState.CHOOSING_OPTION or choice_owner == null or choice_owner.is_ai:
+	if flow_state not in [FlowState.CHOOSING_OPTION, FlowState.KILL_REWARD] or choice_owner == null or choice_owner.is_ai:
 		return
 	if option_index < 0 or option_index >= choice_labels.size():
 		return
@@ -4883,23 +4960,32 @@ func _cancel_delayed_placement() -> void:
 	_finish_nullifiable_effect()
 
 
-func _show_choices(owner: BattlePlayer, labels: Array[String], handler: Callable) -> void:
+func _show_choices(
+	owner: BattlePlayer,
+	labels: Array[String],
+	handler: Callable,
+	choice_state: FlowState = FlowState.CHOOSING_OPTION,
+	ai_option_index: int = 0
+) -> void:
 	choice_owner = owner
 	choice_labels = labels
 	_choice_handler = handler
-	flow_state = FlowState.CHOOSING_OPTION
+	_choice_ai_option_index = clampi(ai_option_index, 0, maxi(labels.size() - 1, 0))
+	flow_state = choice_state
 	_emit_state()
 	if owner.is_ai:
 		_schedule("_perform_ai_choice", 0.4)
 
 
 func _perform_ai_choice() -> void:
-	if flow_state != FlowState.CHOOSING_OPTION or choice_owner == null or not choice_owner.is_ai:
+	if flow_state not in [FlowState.CHOOSING_OPTION, FlowState.KILL_REWARD] or choice_owner == null or not choice_owner.is_ai:
 		return
 	var handler: Callable = _choice_handler
+	var option_index: int = _choice_ai_option_index
 	choice_labels.clear()
 	_choice_handler = Callable()
-	handler.call(0)
+	_choice_ai_option_index = 0
+	handler.call(option_index)
 
 
 func _begin_turn() -> void:
@@ -5221,7 +5307,8 @@ func _finish_judgement_phase() -> void:
 		_add_log("摸牌阶段被【兵粮寸断】跳过。")
 		_finish_draw_phase()
 		return
-	_draw_context = DrawContext.new(current_player(), 2)
+	## 先汇总角色/场景/关卡修正，再交给武将技能的 before_draw 触发链处理。
+	_draw_context = DrawContext.new(current_player(), draw_count_for(current_player(), 2))
 	_enqueue_triggers(&"before_draw", _draw_context, [current_player()], Callable(self, "_resolve_draw_context"))
 
 
@@ -5262,6 +5349,7 @@ func _start_damage(
 	use_context: SkillUseContext = null,
 	reason: String = ""
 ) -> void:
+	_damage_resolution_depth += 1
 	_damage_after = after
 	_damage_queue.clear()
 	var source_card: Card = use_context.primary_physical_card() if use_context != null else null
@@ -5311,7 +5399,12 @@ func _process_damage_queue() -> void:
 	if _damage_queue.is_empty():
 		var after: Callable = _damage_after
 		_damage_after = Callable()
-		_call_safe(after)
+		_damage_resolution_depth = maxi(_damage_resolution_depth - 1, 0)
+		if _damage_resolution_depth > 0:
+			## 嵌套伤害先恢复外层队列；奖励与胜负留到最外层统一结算。
+			_call_safe(after)
+		else:
+			_settle_deferred_death_outcomes(after)
 		return
 	var context: DamageContext = _damage_queue.pop_front()
 	var target: BattlePlayer = context.target
@@ -5505,22 +5598,98 @@ func _next_unpassed_rescue_actor(actor: BattlePlayer) -> BattlePlayer:
 
 
 func _declare_death(loser: BattlePlayer) -> void:
-	_add_log("%s 阵亡。" % loser.player_name)
-	if check_battle_result():
-		_dying_after = Callable()
-		_rescue_passed.clear()
-		rescue_actor = null
-		dying_player = null
+	if loser == null or _declared_dead_ids.has(loser.get_instance_id()):
 		return
-	## 仍有存活敌人：战斗继续。恢复原结算链（伤害队列/技能 continuation），
-	## 死亡角色由回合状态机与目标合法性检查自动跳过。
+	_declared_dead_ids[loser.get_instance_id()] = true
+	_add_log("%s 阵亡。" % loser.player_name)
+	_queue_kill_reward(loser)
 	var after: Callable = _dying_after
 	_dying_after = Callable()
 	_rescue_passed.clear()
 	rescue_actor = null
 	dying_player = null
 	_emit_state()
-	_call_safe(after)
+	if _damage_resolution_depth > 0:
+		## 伤害队列仍在运行：先恢复原 continuation，最外层队列清空后再结算胜负/奖励。
+		_call_safe(after)
+	else:
+		_settle_deferred_death_outcomes(after)
+
+
+func _queue_kill_reward(defeated: BattlePlayer) -> void:
+	var reward_id: StringName = kill_reward_for(defeated)
+	if reward_id == &"" or player1 == null or player1.is_dying():
+		return
+	_pending_kill_rewards.append({
+		"reward_id": reward_id,
+		"defeated": defeated,
+	})
+
+
+## 这是死亡链的统一提交点：先判胜负，未结束时才逐项发放非末敌奖励。
+func _settle_deferred_death_outcomes(continuation: Callable) -> void:
+	if check_battle_result():
+		_pending_kill_rewards.clear()
+		return
+	_process_next_kill_reward(continuation)
+
+
+func _process_next_kill_reward(continuation: Callable) -> void:
+	if flow_state == FlowState.GAME_OVER:
+		_pending_kill_rewards.clear()
+		return
+	if _pending_kill_rewards.is_empty():
+		_resume_after_kill_rewards(continuation)
+		return
+	var reward: Dictionary = _pending_kill_rewards.pop_front()
+	var defeated: BattlePlayer = reward.get("defeated") as BattlePlayer
+	match StringName(reward.get("reward_id", &"")):
+		KILL_REWARD_HEAL_OR_DRAW:
+			var actual_heal: int = mini(1, maxi(player1.max_hp - player1.hp, 0))
+			var labels: Array[String] = [
+				"回复 1 点体力（实际回复 %d）" % actual_heal,
+				"摸 2 张牌",
+			]
+			var ai_choice: int = 0 if actual_heal > 0 else 1
+			_add_log("%s 阵亡：请选择击杀奖励（回复 1 或摸 2）。" % defeated.player_name)
+			_show_choices(
+				player1,
+				labels,
+				Callable(self, "_resolve_kill_reward_choice").bind(reward, continuation),
+				FlowState.KILL_REWARD,
+				ai_choice
+			)
+		_:
+			_process_next_kill_reward(continuation)
+
+
+func _resolve_kill_reward_choice(option_index: int, reward: Dictionary, continuation: Callable) -> void:
+	if StringName(reward.get("reward_id", &"")) != KILL_REWARD_HEAL_OR_DRAW:
+		_process_next_kill_reward(continuation)
+		return
+	if option_index == 0:
+		var old_hp: int = player1.hp
+		player1.recover(1)
+		_add_log("击杀奖励：%s 选择回复，实际回复 %d 点体力（%d/%d）。" % [
+			player1.player_name,
+			player1.hp - old_hp,
+			player1.hp,
+			player1.max_hp,
+		])
+	else:
+		draw_cards(player1, 2)
+		_add_log("击杀奖励：%s 选择摸 2 张牌。" % player1.player_name)
+	_emit_state()
+	_process_next_kill_reward(continuation)
+
+
+func _resume_after_kill_rewards(continuation: Callable) -> void:
+	if continuation.is_valid():
+		continuation.call()
+		return
+	## 防御性兜底：测试或无伤害失去体力若未提供 continuation，也不能永久停在奖励状态。
+	flow_state = FlowState.PLAY_ACTIVE if phase == Phase.PLAY else FlowState.IDLE
+	_emit_state()
 
 
 ## 所有胜负出口的汇总判定：玩家死亡 → 失败；存活反贼为空 → 胜利。
@@ -5544,6 +5713,8 @@ func _finish_battle_win() -> void:
 	_settle_processing_cards()
 	_clear_skill_context()
 	_clear_attack_context()
+	_pending_kill_rewards.clear()
+	_damage_resolution_depth = 0
 	rescue_actor = null
 	dying_player = null
 	_add_log("所有反贼阵亡，%s（%s）获胜！" % [player1.player_name, player1.role_name])
@@ -5564,6 +5735,8 @@ func _finish_battle_loss(loser: BattlePlayer) -> void:
 	_settle_processing_cards()
 	_clear_skill_context()
 	_clear_attack_context()
+	_pending_kill_rewards.clear()
+	_damage_resolution_depth = 0
 	rescue_actor = null
 	dying_player = null
 	_add_log("%s 阵亡。%s（%s）获胜！" % [loser.player_name, winner.player_name, winner.role_name])
